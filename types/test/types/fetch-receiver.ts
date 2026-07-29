@@ -51,7 +51,8 @@ for (const operation of [detached, fromGlobal, fromSelf]) {
     // @ts-expect-error Unrelated objects and boxed primitives are illegal.
     operation.apply(invalidReceiver, [url]);
 
-    // @ts-expect-error Unrelated objects and boxed primitives are illegal.
+    // Reflect.apply() types thisArgument as any, so the runtime-only rejection
+    // cannot be represented by an explicit `this` parameter.
     Reflect.apply(operation, invalidReceiver, [url]);
 
     // @ts-expect-error Unrelated objects and boxed primitives are illegal.
