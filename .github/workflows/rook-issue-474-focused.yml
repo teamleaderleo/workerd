@@ -1,129 +1,46 @@
+# Fork-only validation harness for teamleaderleo/stensibly#474.
+# Keep this file out of any upstream Cloudflare contribution.
 name: Issue 474 receiver-aware types
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - research/issue-474-receiver-aware-types
     paths:
       - .github/workflows/rook-issue-474-focused.yml
       - types/**
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   focused:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Check out workerd branch
+      - name: Check out exact triggering commit
         uses: actions/checkout@v4
+
+      - name: Record exact head
+        run: |
+          echo "tested_sha=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
         with:
-          ref: research/issue-474-receiver-aware-types
-          fetch-depth: 0
-
-      - name: Apply pending compile fixes
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          globals_path = Path('types/src/transforms/globals.ts')
-          globals_source = globals_path.read_text()
-          old_import = 'import {\n  getGeneratedReceiverOwner,\n  isThisParameter,\n} from "../receiver";'
-          new_import = 'import { getGeneratedReceiverOwner } from "../receiver";'
-          if old_import in globals_source:
-              globals_source = globals_source.replace(old_import, new_import, 1)
-          else:
-              assert new_import in globals_source
-          globals_path.write_text(globals_source)
-
-          overrides_path = Path('types/src/transforms/overrides/index.ts')
-          overrides_source = overrides_path.read_text()
-          overloads = (
-              'function updateMethodParameters(\n'
-              '  member: ts.MethodDeclaration,\n'
-              '  parameters: ts.NodeArray<ts.ParameterDeclaration>\n'
-              '): ts.MethodDeclaration;\n'
-              'function updateMethodParameters(\n'
-              '  member: ts.MethodSignature,\n'
-              '  parameters: ts.NodeArray<ts.ParameterDeclaration>\n'
-              '): ts.MethodSignature;\n'
-          )
-          if overloads in overrides_source:
-              overrides_source = overrides_source.replace(overloads, '', 1)
-
-          class_anchor = (
-              '  if (ts.isClassDeclaration(override)) {\n'
-              '    const members = override.members.map((member) => {\n'
-              '      const generatedIndex = findMemberIndex('
-          )
-          class_replacement = (
-              '  if (ts.isClassDeclaration(override)) {\n'
-              '    const members = override.members.map((member) => {\n'
-              '      if (!ts.isMethodDeclaration(member)) return member;\n'
-              '      const generatedIndex = findMemberIndex('
-          )
-          if class_anchor in overrides_source:
-              overrides_source = overrides_source.replace(
-                  class_anchor, class_replacement, 1
-              )
-          else:
-              assert class_replacement in overrides_source
-
-          interface_anchor = (
-              '  const members = override.members.map((member) => {\n'
-              '    const generatedIndex = findMemberIndex('
-          )
-          interface_replacement = (
-              '  const members = override.members.map((member) => {\n'
-              '    if (!ts.isMethodSignature(member)) return member;\n'
-              '    const generatedIndex = findMemberIndex('
-          )
-          if interface_anchor in overrides_source:
-              overrides_source = overrides_source.replace(
-                  interface_anchor, interface_replacement, 1
-              )
-          else:
-              assert interface_replacement in overrides_source
-
-          overrides_path.write_text(overrides_source)
-          PY
-
-          rm -f research/issue-474-fix1.patch
-          rm -f .github/workflows/rook-apply-fix1.yml
-          git diff --check
-
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m 'fix(types): compile receiver override helpers'
-            git push origin HEAD:research/issue-474-receiver-aware-types
-          fi
-
-      - name: Install workerd LLVM 19 toolchain
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          wget -q https://apt.llvm.org/llvm.sh
-          sed -i '/apt-get install/d' llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 19
-          sudo apt-get install -y -qq --no-install-recommends \
-            clang-19 lld-19 libunwind-19 libc++abi1-19 libc++1-19 \
-            libc++-19-dev libclang-rt-19-dev llvm-19
-          sudo ln -sf /usr/bin/llvm-symbolizer-19 /usr/bin/llvm-symbolizer
-          sudo ln -sf /usr/bin/llvm-profdata-19 /usr/bin/llvm-profdata
-          sudo ln -sf /usr/bin/llvm-cov-19 /usr/bin/llvm-cov
-          echo 'build:linux --repo_env=CC=/usr/lib/llvm-19/bin/clang' >> .bazelrc
-          echo 'build:linux --linkopt=--ld-path=/usr/lib/llvm-19/bin/ld.lld' >> .bazelrc
-          echo 'build:linux --host_linkopt=--ld-path=/usr/lib/llvm-19/bin/ld.lld' >> .bazelrc
-          echo 'build:linux --repo_env=AR=/usr/lib/llvm-19/bin/llvm-ar' >> .bazelrc
+          GOOGLESOURCE_COOKIE: ''
 
       - name: Run receiver pipeline tests
         run: |
           bazelisk test \
             //types:test/index.spec \
+            //types:test/transforms/overrides/index.spec \
             //types:test/transforms/globals.spec \
             //types:test/types/fetch-receiver \
             --test_output=errors
+
+      - name: Confirm clean working tree
+        run: test -z "$(git status --porcelain)"
