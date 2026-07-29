@@ -30,10 +30,7 @@ jobs:
 
           globals_path = Path('types/src/transforms/globals.ts')
           globals_source = globals_path.read_text()
-          old_import = '''import {
-            getGeneratedReceiverOwner,
-            isThisParameter,
-          } from "../receiver";'''
+          old_import = 'import {\n  getGeneratedReceiverOwner,\n  isThisParameter,\n} from "../receiver";'
           new_import = 'import { getGeneratedReceiverOwner } from "../receiver";'
           if old_import in globals_source:
               globals_source = globals_source.replace(old_import, new_import, 1)
@@ -43,25 +40,30 @@ jobs:
 
           overrides_path = Path('types/src/transforms/overrides/index.ts')
           overrides_source = overrides_path.read_text()
-          overloads = '''function updateMethodParameters(
-            member: ts.MethodDeclaration,
-            parameters: ts.NodeArray<ts.ParameterDeclaration>
-          ): ts.MethodDeclaration;
-          function updateMethodParameters(
-            member: ts.MethodSignature,
-            parameters: ts.NodeArray<ts.ParameterDeclaration>
-          ): ts.MethodSignature;
-          '''
+          overloads = (
+              'function updateMethodParameters(\n'
+              '  member: ts.MethodDeclaration,\n'
+              '  parameters: ts.NodeArray<ts.ParameterDeclaration>\n'
+              '): ts.MethodDeclaration;\n'
+              'function updateMethodParameters(\n'
+              '  member: ts.MethodSignature,\n'
+              '  parameters: ts.NodeArray<ts.ParameterDeclaration>\n'
+              '): ts.MethodSignature;\n'
+          )
           if overloads in overrides_source:
               overrides_source = overrides_source.replace(overloads, '', 1)
 
-          class_anchor = '''  if (ts.isClassDeclaration(override)) {
-            const members = override.members.map((member) => {
-              const generatedIndex = findMemberIndex('''
-          class_replacement = '''  if (ts.isClassDeclaration(override)) {
-            const members = override.members.map((member) => {
-              if (!ts.isMethodDeclaration(member)) return member;
-              const generatedIndex = findMemberIndex('''
+          class_anchor = (
+              '  if (ts.isClassDeclaration(override)) {\n'
+              '    const members = override.members.map((member) => {\n'
+              '      const generatedIndex = findMemberIndex('
+          )
+          class_replacement = (
+              '  if (ts.isClassDeclaration(override)) {\n'
+              '    const members = override.members.map((member) => {\n'
+              '      if (!ts.isMethodDeclaration(member)) return member;\n'
+              '      const generatedIndex = findMemberIndex('
+          )
           if class_anchor in overrides_source:
               overrides_source = overrides_source.replace(
                   class_anchor, class_replacement, 1
@@ -69,11 +71,15 @@ jobs:
           else:
               assert class_replacement in overrides_source
 
-          interface_anchor = '''  const members = override.members.map((member) => {
-            const generatedIndex = findMemberIndex('''
-          interface_replacement = '''  const members = override.members.map((member) => {
-            if (!ts.isMethodSignature(member)) return member;
-            const generatedIndex = findMemberIndex('''
+          interface_anchor = (
+              '  const members = override.members.map((member) => {\n'
+              '    const generatedIndex = findMemberIndex('
+          )
+          interface_replacement = (
+              '  const members = override.members.map((member) => {\n'
+              '    if (!ts.isMethodSignature(member)) return member;\n'
+              '    const generatedIndex = findMemberIndex('
+          )
           if interface_anchor in overrides_source:
               overrides_source = overrides_source.replace(
                   interface_anchor, interface_replacement, 1
