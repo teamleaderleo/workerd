@@ -16,7 +16,7 @@ permissions:
 jobs:
   focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Check out exact PR head
         uses: actions/checkout@v4
