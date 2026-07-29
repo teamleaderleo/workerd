@@ -3,13 +3,12 @@
 name: Issue 474 receiver-aware types
 
 on:
-  push:
+  pull_request:
     branches:
-      - research/issue-474-receiver-aware-types
+      - main
     paths:
       - .github/workflows/rook-issue-474-focused.yml
       - types/**
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,13 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Check out exact triggering commit
+      - name: Check out exact PR head
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Record exact head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "tested_sha=$(git rev-parse HEAD)"
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
           test -z "$(git status --porcelain)"
 
       - name: Set up repository toolchain
