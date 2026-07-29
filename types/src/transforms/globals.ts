@@ -213,6 +213,15 @@ function widenContextGlobalScopeDeclaration(
   );
 }
 
+function hasStaticModifier(node: ts.Node): boolean {
+  return (
+    ts.canHaveModifiers(node) &&
+    ts
+      .getModifiers(node)
+      ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true
+  );
+}
+
 // Call with each potential method/property that could be extracted into a
 // global function/const.
 export function maybeExtractGlobalNode(
@@ -220,6 +229,10 @@ export function maybeExtractGlobalNode(
   node: ts.Node,
   modifiers?: readonly ts.ModifierLike[]
 ): ts.Statement | undefined {
+  // Static members live on constructors. They are not inherited by global-scope
+  // instances and therefore cannot represent ambient global operations.
+  if (hasStaticModifier(node)) return undefined;
+
   if (
     (ts.isMethodSignature(node) || ts.isMethodDeclaration(node)) &&
     ts.isIdentifier(node.name)
