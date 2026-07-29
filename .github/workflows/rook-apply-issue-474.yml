@@ -1,0 +1,49 @@
+name: Rook apply issue 474 prototype
+
+on:
+  push:
+    branches:
+      - research/issue-474-receiver-aware-types
+    paths:
+      - .github/workflows/rook-apply-issue-474.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/issue-474-receiver-aware-types
+          fetch-depth: 0
+
+      - name: Repair and apply staged patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('research/issue-474-receiver-aware-types.patch')
+          lines = source.read_text().splitlines()
+          marker = '+diff --git a/types/src/generator/structure.ts b/types/src/generator/structure.ts'
+          start = lines.index(marker)
+          repaired = lines[:start]
+          repaired.extend(line[1:] if line.startswith('+') else line for line in lines[start:])
+          Path('/tmp/issue-474.patch').write_text('\n'.join(repaired) + '\n')
+          PY
+
+          git apply --recount --check /tmp/issue-474.patch
+          git apply --recount /tmp/issue-474.patch
+          git rm research/issue-474-receiver-aware-types.patch
+          git rm .github/workflows/rook-apply-issue-474.yml
+          git diff --check
+
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'types: preserve generated receiver policy'
+          git push origin HEAD:research/issue-474-receiver-aware-types
