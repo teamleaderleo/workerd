@@ -17,6 +17,7 @@ import {
 } from '@workerd/jsg/rtti';
 import ts, { factory as f } from 'typescript';
 import { printNode } from '../print';
+import { createGeneratedReceiverParameter } from '../receiver';
 import {
   createParamDeclarationNodes,
   createTypeNode,
@@ -42,6 +43,16 @@ export function createMethodPartial(
     method.args.toArray(),
     /* forMethod */ true
   );
+  // JSG installs an owning V8 Signature for ordinary instance methods. Carry a
+  // marked receiver through the handwritten override pipeline, then erase the
+  // marker before printing the final declarations. Static methods have no
+  // holder signature and remain receiver-free.
+  if (!method.static) {
+    const ownerType = f.createTypeReferenceNode(
+      getTypeName(fullyQualifiedParentName)
+    );
+    params.unshift(createGeneratedReceiverParameter(ownerType));
+  }
   const result = createTypeNode(method.returnType);
   return [modifiers, name, params, result];
 }
