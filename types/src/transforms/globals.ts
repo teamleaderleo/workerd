@@ -4,10 +4,7 @@
 
 import assert from "node:assert";
 import ts from "typescript";
-import {
-  getGeneratedReceiverOwner,
-  isThisParameter,
-} from "../receiver";
+import { getGeneratedReceiverOwner } from "../receiver";
 
 // Copies all properties of `ServiceWorkerGlobalScope` and its superclasses into
 // the global scope:

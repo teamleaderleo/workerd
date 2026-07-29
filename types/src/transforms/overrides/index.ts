@@ -152,14 +152,6 @@ function findMemberIndex<Member extends ts.ClassElement | ts.TypeElement>(
 type MethodMember = ts.MethodDeclaration | ts.MethodSignature;
 
 function updateMethodParameters(
-  member: ts.MethodDeclaration,
-  parameters: ts.NodeArray<ts.ParameterDeclaration>
-): ts.MethodDeclaration;
-function updateMethodParameters(
-  member: ts.MethodSignature,
-  parameters: ts.NodeArray<ts.ParameterDeclaration>
-): ts.MethodSignature;
-function updateMethodParameters(
   member: MethodMember,
   parameters: ts.NodeArray<ts.ParameterDeclaration>
 ): MethodMember {
@@ -291,6 +283,7 @@ function preserveReplacementReceivers(
 
   if (ts.isClassDeclaration(override)) {
     const members = override.members.map((member) => {
+      if (!ts.isMethodDeclaration(member)) return member;
       const generatedIndex = findMemberIndex(
         generatedMembers,
         getMemberKey(member)
@@ -310,6 +303,7 @@ function preserveReplacementReceivers(
   }
 
   const members = override.members.map((member) => {
+    if (!ts.isMethodSignature(member)) return member;
     const generatedIndex = findMemberIndex(
       generatedMembers,
       getMemberKey(member)
