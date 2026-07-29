@@ -1,0 +1,49 @@
+diff --git a/types/src/transforms/globals.ts b/types/src/transforms/globals.ts
+--- a/types/src/transforms/globals.ts
++++ b/types/src/transforms/globals.ts
+@@ -6,10 +6,7 @@
+ 
+ import assert from "node:assert";
+ import ts from "typescript";
+-import {
+-  getGeneratedReceiverOwner,
+-  isThisParameter,
+-} from "../receiver";
++import { getGeneratedReceiverOwner } from "../receiver";
+ 
+ // Copies all properties of `ServiceWorkerGlobalScope` and its superclasses into
+ // the global scope:
+diff --git a/types/src/transforms/overrides/index.ts b/types/src/transforms/overrides/index.ts
+--- a/types/src/transforms/overrides/index.ts
++++ b/types/src/transforms/overrides/index.ts
+@@ -151,16 +151,6 @@ function findMemberIndex<Member extends ts.ClassElement | ts.TypeElement>(
+ 
+ type MethodMember = ts.MethodDeclaration | ts.MethodSignature;
+ 
+-function updateMethodParameters(
+-  member: ts.MethodDeclaration,
+-  parameters: ts.NodeArray<ts.ParameterDeclaration>
+-): ts.MethodDeclaration;
+-function updateMethodParameters(
+-  member: ts.MethodSignature,
+-  parameters: ts.NodeArray<ts.ParameterDeclaration>
+-): ts.MethodSignature;
+ function updateMethodParameters(
+   member: MethodMember,
+   parameters: ts.NodeArray<ts.ParameterDeclaration>
+@@ -310,6 +300,7 @@ function preserveReplacementReceivers(
+ 
+   if (ts.isClassDeclaration(override)) {
+     const members = override.members.map((member) => {
++      if (!ts.isMethodDeclaration(member)) return member;
+       const generatedIndex = findMemberIndex(
+         generatedMembers,
+         getMemberKey(member)
+@@ -329,6 +320,7 @@ function preserveReplacementReceivers(
+   }
+ 
+   const members = override.members.map((member) => {
++    if (!ts.isMethodSignature(member)) return member;
+     const generatedIndex = findMemberIndex(
+       generatedMembers,
+       getMemberKey(member)
