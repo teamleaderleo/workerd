@@ -228,7 +228,6 @@ declare function addEventListener(this: EventTarget<WorkerGlobalScopeEventMap> |
 declare function receiverFree(this: void, value: string): string;
 declare function customReceiver(this: EventTarget<WorkerGlobalScopeEventMap> | WorkerGlobalScope, value: string): string;
 declare function plain(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, param0: string): string;
-declare function detachable(param0: string): string;
 declare function things(this: ServiceWorkerGlobalScope | typeof globalThis | null | void, param0: boolean): IterableIterator<string>;
 declare const prop: Promise<number>;
 declare class ReplacementTarget {
