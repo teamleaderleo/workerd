@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   focused:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-16core
     timeout-minutes: 120
     steps:
       - name: Check out exact PR head
