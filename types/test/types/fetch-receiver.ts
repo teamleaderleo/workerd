@@ -10,8 +10,10 @@ const detached = fetch;
 
 const sameAsGlobal: typeof fetch = fromGlobal;
 const sameAsSelf: typeof fetch = fromSelf;
+const globalAsSelfMember: typeof self.fetch = fetch;
 void sameAsGlobal;
 void sameAsSelf;
+void globalAsSelfMember;
 
 for (const operation of [detached, fromGlobal, fromSelf]) {
   operation(url);
@@ -20,16 +22,15 @@ for (const operation of [detached, fromGlobal, fromSelf]) {
   operation.call(globalThis, url);
   operation.call(self, url);
 
-  // @ts-expect-error An unrelated object is not a legal Worker receiver.
-  operation.call({}, url);
-
   operation.apply(undefined, [url]);
   operation.apply(null, [url]);
   operation.apply(globalThis, [url]);
   operation.apply(self, [url]);
 
-  // @ts-expect-error An unrelated object is not a legal Worker receiver.
-  operation.apply({}, [url]);
+  Reflect.apply(operation, undefined, [url]);
+  Reflect.apply(operation, null, [url]);
+  Reflect.apply(operation, globalThis, [url]);
+  Reflect.apply(operation, self, [url]);
 
   const boundUndefined = operation.bind(undefined);
   const boundNull = operation.bind(null);
@@ -43,8 +44,19 @@ for (const operation of [detached, fromGlobal, fromSelf]) {
   // Valid binding erases the native receiver requirement from the bound value.
   ({ fetch: boundGlobal }).fetch(url);
 
-  // @ts-expect-error An unrelated object cannot be bound as the receiver.
-  operation.bind({});
+  for (const invalidReceiver of [{}, 0, "", true, Symbol("receiver")]) {
+    // @ts-expect-error Unrelated objects and boxed primitives are illegal.
+    operation.call(invalidReceiver, url);
+
+    // @ts-expect-error Unrelated objects and boxed primitives are illegal.
+    operation.apply(invalidReceiver, [url]);
+
+    // @ts-expect-error Unrelated objects and boxed primitives are illegal.
+    Reflect.apply(operation, invalidReceiver, [url]);
+
+    // @ts-expect-error Unrelated objects and boxed primitives are illegal.
+    operation.bind(invalidReceiver);
+  }
 
   const holder = { fetch: operation };
   // @ts-expect-error Property-call syntax supplies holder as the receiver.
