@@ -132,6 +132,7 @@ test('main: generates types', async () => {
   const replacementTarget = structures.get(5);
   replacementTarget.name = 'ReplacementTarget';
   replacementTarget.fullyQualifiedName = 'workerd::api::ReplacementTarget';
+  replacementTarget.tsRoot = true;
   {
     const members = replacementTarget._initMembers(1);
     const convert = members.get(0)._initMethod();
@@ -201,6 +202,11 @@ declare class EventTarget<EventMap extends Record<string, Event> = Record<string
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener)
      */
     addEventListener<Type extends keyof EventMap>(this: EventTarget<EventMap>, type: Type, handler: (event: EventMap[Type]) => void): void;
+    /**
+     * The **\`addEventListener()\`** method of the EventTarget interface sets up a function that will be called whenever the specified event is delivered to the target.
+     *
+     * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener)
+     */
     addEventListener(this: EventTarget<EventMap>, type: string, handler: (event: Event) => void): void;
     receiverFree(this: void, value: string): string;
     customReceiver(this: EventTarget<EventMap> | WorkerGlobalScope, value: string): string;
