@@ -48,19 +48,21 @@ export function createGlobalScopeTransformer(
   };
 }
 
+type NamedDeclaration = ts.InterfaceDeclaration | ts.ClassDeclaration;
+
 function collectNamedDeclarations(
   sourceFile: ts.SourceFile
-): Map<string, ts.InterfaceDeclaration | ts.ClassDeclaration> {
-  const declarations = new Map<
-    string,
-    ts.InterfaceDeclaration | ts.ClassDeclaration
-  >();
+): Map<string, NamedDeclaration[]> {
+  const declarations = new Map<string, NamedDeclaration[]>();
   const visitor = (node: ts.Node): void => {
     if (
       (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) &&
       node.name !== undefined
     ) {
-      declarations.set(node.name.text, node);
+      const name = node.name.text;
+      const named = declarations.get(name) ?? [];
+      named.push(node);
+      declarations.set(name, named);
     }
     ts.forEachChild(node, visitor);
   };
@@ -270,10 +272,41 @@ export function maybeExtractGlobalNode(
   }
 }
 
+function getHeritageDeclaration(
+  checker: ts.TypeChecker,
+  declarations: Map<string, NamedDeclaration[]>,
+  originalSuperType: ts.ExpressionWithTypeArguments,
+  transformedSuperType: ts.ExpressionWithTypeArguments
+): NamedDeclaration {
+  const symbol = checker.getSymbolAtLocation(originalSuperType.expression);
+  if (symbol !== undefined) {
+    const symbolDeclarations = symbol.getDeclarations();
+    assert.strictEqual(symbolDeclarations?.length, 1);
+    const declaration = symbolDeclarations[0];
+    assert(
+      ts.isInterfaceDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration)
+    );
+    return declaration;
+  }
+
+  assert(
+    ts.isIdentifier(transformedSuperType.expression),
+    "Expected checker resolution for qualified heritage expression"
+  );
+  const candidates = declarations.get(transformedSuperType.expression.text);
+  assert.strictEqual(
+    candidates?.length,
+    1,
+    `Expected one generated declaration named ${transformedSuperType.expression.text}, got ${candidates?.length ?? 0}`
+  );
+  return candidates[0];
+}
+
 function createGlobalScopeVisitor(
   ctx: ts.TransformationContext,
   checker: ts.TypeChecker,
-  declarations: Map<string, ts.InterfaceDeclaration | ts.ClassDeclaration>
+  declarations: Map<string, NamedDeclaration[]>
 ): ts.Visitor {
   // Called with each class/interface that should have its methods/properties
   // extracted into global functions/consts. Recursively visits superclasses.
@@ -299,43 +332,36 @@ function createGlobalScopeVisitor(
 
     // Recursively extract from all superclasses
     if (node.heritageClauses !== undefined) {
-      for (let clause of node.heritageClauses) {
+      for (const originalClause of node.heritageClauses) {
         // Handle case where type param appears in heritage clause:
         // ```ts
         // class A<T> {}     // ↓
         // class B<T> extends A<T> {}
         // class C extends B<string> {}
         // ```
-        clause = ts.visitNode(clause, inlineVisitor, ts.isHeritageClause);
+        const transformedClause = ts.visitNode(
+          originalClause,
+          inlineVisitor,
+          ts.isHeritageClause
+        );
+        assert.strictEqual(
+          transformedClause.types.length,
+          originalClause.types.length
+        );
 
-        for (const superType of clause.types) {
-          let superTypeDeclaration:
-            | ts.InterfaceDeclaration
-            | ts.ClassDeclaration
-            | undefined;
-          if (ts.isIdentifier(superType.expression)) {
-            superTypeDeclaration = declarations.get(superType.expression.text);
-          }
-          if (superTypeDeclaration === undefined) {
-            const superTypeSymbol = checker.getSymbolAtLocation(
-              superType.expression
-            );
-            assert(superTypeSymbol !== undefined);
-            const superTypeDeclarations = superTypeSymbol.getDeclarations();
-            assert.strictEqual(superTypeDeclarations?.length, 1);
-            const declaration = superTypeDeclarations[0];
-            assert(
-              ts.isInterfaceDeclaration(declaration) ||
-                ts.isClassDeclaration(declaration)
-            );
-            superTypeDeclaration = declaration;
-          }
+        transformedClause.types.forEach((superType, index) => {
+          const superTypeDeclaration = getHeritageDeclaration(
+            checker,
+            declarations,
+            originalClause.types[index],
+            superType
+          );
           nodes.push(
             // Pass any defined type arguments for inlining in extracted nodes
             // (e.g. `...extends EventTarget<WorkerGlobalScopeEventMap>`).
             ...extractGlobalNodes(superTypeDeclaration, superType.typeArguments)
           );
-        }
+        });
       }
     }
 
