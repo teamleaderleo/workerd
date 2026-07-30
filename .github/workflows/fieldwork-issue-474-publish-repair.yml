@@ -1,9 +1,9 @@
 name: Fieldwork issue 474 publish receiver repair
 
 on:
-  push:
+  pull_request:
     branches:
-      - research/issue-474-receiver-full-replacement-repair
+      - research/issue-474-receiver-aware-types
     paths:
       - .github/workflows/fieldwork-issue-474-publish-repair.yml
       - fieldwork-experiments/issue-474-receiver-full-replacement/generic-replacement-receiver.patch
