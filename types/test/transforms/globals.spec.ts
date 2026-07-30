@@ -72,7 +72,7 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
     output,
     // Extracted global nodes inserted after ServiceWorkerGlobalScope
     cleanedSource +
-      `declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: WorkerGlobalScopeEventMap[Type]) => void): void;
+      `declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: EventMap[Type]) => void): void;
 declare function dispatchEvent(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, event: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap]): void;
 declare function explicitlyReceiverFree(this: void, value: string): string;
 declare const thing: string;
@@ -113,6 +113,40 @@ declare class ServiceWorkerGlobalScope extends B<string> {
     output,
     source +
       `declare const thing: string;
+`
+  );
+});
+
+test("createGlobalScopeTransformer: resolves heritage in lexical scope", () => {
+  const source = `declare class Base {
+    topLevel(): string;
+}
+declare namespace Other {
+    class Base {
+        nestedOnly(): number;
+    }
+}
+declare class ServiceWorkerGlobalScope extends Base {
+}
+`;
+
+  const sourcePath = path.resolve(__dirname, "source.ts");
+  const sources = new Map([[sourcePath, source]]);
+  const program = createMemoryProgram(sources);
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFile(sourcePath);
+  assert(sourceFile !== undefined);
+
+  const result = ts.transform(sourceFile, [
+    createGlobalScopeTransformer(checker),
+  ]);
+  assert.strictEqual(result.transformed.length, 1);
+
+  const output = printer.printFile(result.transformed[0]);
+  assert.strictEqual(
+    output,
+    source +
+      `declare function topLevel(): string;
 `
   );
 });
