@@ -72,7 +72,7 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
     output,
     // Extracted global nodes inserted after ServiceWorkerGlobalScope
     cleanedSource +
-      `declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: EventMap[Type]) => void): void;
+      `declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: WorkerGlobalScopeEventMap[Type]) => void): void;
 declare function dispatchEvent(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, event: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap]): void;
 declare function explicitlyReceiverFree(this: void, value: string): string;
 declare const thing: string;
