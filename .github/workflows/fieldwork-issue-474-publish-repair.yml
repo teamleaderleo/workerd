@@ -1,0 +1,62 @@
+name: Fieldwork issue 474 publish receiver repair
+
+on:
+  push:
+    branches:
+      - research/issue-474-receiver-full-replacement-repair
+    paths:
+      - .github/workflows/fieldwork-issue-474-publish-repair.yml
+      - fieldwork-experiments/issue-474-receiver-full-replacement/generic-replacement-receiver.patch
+      - types/test/transforms/overrides/replacement-receiver-generics.spec.ts
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04-16core
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/issue-474-receiver-full-replacement-repair
+
+      - name: Record exact input head
+        run: |
+          echo "input_sha=$(git rev-parse HEAD)"
+          test -f fieldwork-experiments/issue-474-receiver-full-replacement/generic-replacement-receiver.patch
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Apply retained repair
+        run: git apply --index fieldwork-experiments/issue-474-receiver-full-replacement/generic-replacement-receiver.patch
+
+      - name: Run replacement receiver generic controls
+        run: |
+          bazelisk test \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
+            --test_output=errors
+
+      - name: Check changed source and test formatting
+        run: |
+          npx prettier --check \
+            types/src/transforms/overrides/index.ts \
+            types/test/transforms/overrides/replacement-receiver-generics.spec.ts
+          git diff --check
+
+      - name: Publish source-only repair and remove carrier
+        run: |
+          rm -f .github/workflows/fieldwork-issue-474-publish-repair.yml
+          rm -f fieldwork-experiments/issue-474-receiver-full-replacement/generic-replacement-receiver.patch
+          rmdir fieldwork-experiments/issue-474-receiver-full-replacement 2>/dev/null || true
+          rmdir fieldwork-experiments 2>/dev/null || true
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(types): bind replacement receivers to declared generics"
+          git push origin HEAD:research/issue-474-receiver-full-replacement-repair
