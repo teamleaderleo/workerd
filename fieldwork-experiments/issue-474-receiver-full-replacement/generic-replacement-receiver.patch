@@ -1,5 +1,4 @@
 diff --git a/types/src/transforms/overrides/index.ts b/types/src/transforms/overrides/index.ts
-index 2f0fe19a1..FIELDWORK 100644
 --- a/types/src/transforms/overrides/index.ts
 +++ b/types/src/transforms/overrides/index.ts
 @@ -278,7 +278,7 @@ function preserveReplacementReceivers(
