@@ -276,7 +276,7 @@ function preserveReplacementReceivers(
     return override;
   }
 
-  const typeParameters = override.typeParameters ?? generated.typeParameters;
+  const typeParameters = override.typeParameters;
   const generatedMembers = [...generated.members].map((member) =>
     specializeMemberReceiver(member, typeParameters)
   );
