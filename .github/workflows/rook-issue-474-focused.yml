@@ -3,12 +3,19 @@
 name: Issue 474 receiver-aware types
 
 on:
+  push:
+    branches:
+      - research/issue-474-receiver-aware-types
+    paths:
+      - .github/workflows/rook-issue-474-focused.yml
+      - types/**
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/rook-issue-474-focused.yml
       - types/**
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,14 +25,14 @@ jobs:
     runs-on: ubuntu-22.04-16core
     timeout-minutes: 120
     steps:
-      - name: Check out exact PR head
+      - name: Check out exact candidate head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Record exact head
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           echo "tested_sha=$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
@@ -41,6 +48,7 @@ jobs:
           bazelisk test \
             //types:test/index.spec \
             //types:test/transforms/overrides/index.spec \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
             //types:test/transforms/globals.spec \
             //types:test/types/fetch-receiver \
             --test_output=errors
