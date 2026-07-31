@@ -1,4 +1,4 @@
-name: Issue 474 generic replacement repair PR
+name: Issue 474 generic replacement exact-head execution
 
 on:
   pull_request:
@@ -6,126 +6,43 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair:
+  focused:
     if: github.head_ref == 'execution/issue-474-generic-replacement-repair'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
-      - name: Check out canonical candidate
+      - name: Check out exact canonical candidate
         uses: actions/checkout@v6
         with:
-          ref: research/issue-474-receiver-aware-types
-          fetch-depth: 0
+          ref: 1c6c6ecf445513402a9b2d13b16d61e4a949f2c7
+          persist-credentials: false
 
-      - name: Repair specialization and add regression
-        shell: bash
+      - name: Record exact source fence
         run: |
-          set -euxo pipefail
-          node <<'NODE'
-          const fs = require('node:fs')
-          const path = 'types/src/transforms/overrides/index.ts'
-          const before = fs.readFileSync(path, 'utf8')
-          const oldLine = '  const typeParameters = override.typeParameters ?? generated.typeParameters;'
-          const newLine = '  const typeParameters = override.typeParameters;'
-          const count = before.split(oldLine).length - 1
-          if (count !== 1) {
-            throw new Error(`expected one replacement specialization line, found ${count}`)
-          }
-          fs.writeFileSync(path, before.replace(oldLine, newLine))
-          NODE
-
-          cat > types/test/transforms/overrides/replacement-receiver-generics.spec.ts <<'EOF'
-          import assert from 'node:assert';
-          import { test } from 'node:test';
-          import ts from 'typescript';
-          import { printer } from '../../../src/print';
-          import { SourcesMap, createMemoryProgram } from '../../../src/program';
-          import { createOverrideDefineTransformer } from '../../../src/transforms';
-
-          function transformReplacement(
-            generated: string,
-            replacement: string
-          ): string {
-            const sourcePath = '/source.ts';
-            const sources = new SourcesMap();
-            sources.set(sourcePath, generated);
-            sources.set('/$virtual/overrides/Owner.ts', replacement);
-            const program = createMemoryProgram(sources);
-            const sourceFile = program.getSourceFile(sourcePath);
-            assert(sourceFile !== undefined);
-            const result = ts.transform(sourceFile, [
-              createOverrideDefineTransformer(program, new Set(['Owner'])),
-            ]);
-            try {
-              assert.strictEqual(result.transformed.length, 1);
-              return printer.printFile(result.transformed[0]);
-            } finally {
-              result.dispose();
-            }
-          }
-
-          test('generic generated owner to nongeneric replacement', () => {
-            const output = transformReplacement(
-              `declare abstract class Owner<T> {
-                method(this: __JSG_GENERATED_RECEIVER__<Owner>): void;
-              }`,
-              `interface Owner {
-                method(): void;
-              }`
-            );
-            assert.match(
-              output,
-              /method\(this: __JSG_GENERATED_RECEIVER__<Owner>\): void;/
-            );
-            assert.doesNotMatch(output, /Owner<T>/);
-          });
-
-          test('generic generated owner to generic replacement', () => {
-            const output = transformReplacement(
-              `declare abstract class Owner<T> {
-                method(this: __JSG_GENERATED_RECEIVER__<Owner>): void;
-              }`,
-              `interface Owner<U> {
-                method(): void;
-              }`
-            );
-            assert.match(output, /interface Owner<U>/);
-            assert.match(
-              output,
-              /method\(this: __JSG_GENERATED_RECEIVER__<Owner<U>>\): void;/
-            );
-          });
-
-          test('nongeneric generated owner to generic replacement', () => {
-            const output = transformReplacement(
-              `declare abstract class Owner {
-                method(this: __JSG_GENERATED_RECEIVER__<Owner>): void;
-              }`,
-              `interface Owner<U> {
-                method(): void;
-              }`
-            );
-            assert.match(output, /interface Owner<U>/);
-            assert.match(
-              output,
-              /method\(this: __JSG_GENERATED_RECEIVER__<Owner<U>>\): void;/
-            );
-          });
-          EOF
-
-          git diff --check
-
-      - name: Commit canonical repair
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add \
-            types/src/transforms/overrides/index.ts \
+          test "$(git rev-parse HEAD)" = "1c6c6ecf445513402a9b2d13b16d61e4a949f2c7"
+          test -z "$(git status --porcelain)"
+          grep -F "const typeParameters = override.typeParameters;" \
+            types/src/transforms/overrides/index.ts
+          test -f \
             types/test/transforms/overrides/replacement-receiver-generics.spec.ts
-          git diff --cached --stat
-          git commit -m "Repair generic replacement receiver specialization"
-          git push origin HEAD:research/issue-474-receiver-aware-types
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Run receiver pipeline and replacement matrix
+        run: |
+          bazelisk test \
+            //types:test/index.spec \
+            //types:test/transforms/overrides/index.spec \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
+            //types:test/transforms/globals.spec \
+            //types:test/types/fetch-receiver \
+            --test_output=errors
+
+      - name: Confirm clean working tree
+        run: test -z "$(git status --porcelain)"
