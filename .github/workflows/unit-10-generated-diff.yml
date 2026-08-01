@@ -1,0 +1,89 @@
+# Fork-only generated-output carrier for Fieldwork upstream unit 10.
+name: Unit 10 generated declaration diff
+
+on:
+  pull_request:
+    branches:
+      - unit-10/receiver-aware-types
+    paths:
+      - .github/workflows/unit-10-generated-diff.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: d9c685f095f7984f959769e901099309552bc9c9
+  BASE_SHA: d82c2a45a8695aac30d4d24828ce1ee7fb11909b
+
+jobs:
+  generated-output:
+    runs-on: windows-2025
+    timeout-minutes: 360
+    steps:
+      - name: Check out exact carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        shell: pwsh
+        run: |
+          git diff --exit-code $env:CANDIDATE_SHA HEAD -- . ':(exclude).github/workflows/unit-10-generated-diff.yml'
+          if (git status --porcelain) { throw 'dirty carrier checkout' }
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Build baseline generated declarations
+        shell: pwsh
+        run: |
+          git switch --detach $env:BASE_SHA
+          bazelisk build //types:types
+          New-Item -ItemType Directory -Force C:\unit-10\baseline | Out-Null
+          Copy-Item -Recurse -Force bazel-bin\types\definitions\* C:\unit-10\baseline\
+          Get-ChildItem -Recurse -File C:\unit-10\baseline | ForEach-Object FullName | Sort-Object | Set-Content C:\unit-10\baseline-files.txt
+
+      - name: Build candidate and run receiver fixture
+        shell: pwsh
+        run: |
+          git switch --detach $env:CANDIDATE_SHA
+          bazelisk build //types:types
+          bazelisk test //types:test/types/fetch-receiver --test_output=errors
+          New-Item -ItemType Directory -Force C:\unit-10\candidate | Out-Null
+          Copy-Item -Recurse -Force bazel-bin\types\definitions\* C:\unit-10\candidate\
+          Get-ChildItem -Recurse -File C:\unit-10\candidate | ForEach-Object FullName | Sort-Object | Set-Content C:\unit-10\candidate-files.txt
+          $leaks = Get-ChildItem -Recurse -File C:\unit-10\candidate | Select-String '__JSG_GENERATED_RECEIVER__'
+          if ($leaks) { $leaks | Write-Output; throw 'generated receiver marker leaked into public declarations' }
+
+      - name: Produce compatibility review artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force unit-10-validation | Out-Null
+          git diff --no-index -- C:/unit-10/baseline C:/unit-10/candidate | Out-File -Encoding utf8 unit-10-validation/generated-declarations.diff
+          if ($LASTEXITCODE -gt 1) { throw "git diff failed with $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+          Copy-Item C:\unit-10\baseline-files.txt unit-10-validation\
+          Copy-Item C:\unit-10\candidate-files.txt unit-10-validation\
+          Select-String '^\+.*this:' unit-10-validation/generated-declarations.diff | ForEach-Object Line | Set-Content unit-10-validation/added-receivers.txt
+          Select-String '^-.*this:' unit-10-validation/generated-declarations.diff | ForEach-Object Line | Set-Content unit-10-validation/removed-receivers.txt
+          $diff = Get-Content unit-10-validation/generated-declarations.diff
+          @(
+            "base_sha=$env:BASE_SHA",
+            "candidate_sha=$env:CANDIDATE_SHA",
+            "changed_files=$(($diff | Select-String '^diff ').Count)",
+            "added_lines=$(($diff | Select-String '^\+' | Where-Object { $_.Line -notmatch '^\+\+\+' }).Count)",
+            "removed_lines=$(($diff | Select-String '^-' | Where-Object { $_.Line -notmatch '^---' }).Count)",
+            "added_receiver_lines=$((Get-Content unit-10-validation/added-receivers.txt -ErrorAction SilentlyContinue).Count)",
+            "removed_receiver_lines=$((Get-Content unit-10-validation/removed-receivers.txt -ErrorAction SilentlyContinue).Count)"
+          ) | Tee-Object -FilePath unit-10-validation/summary.txt
+
+      - name: Upload generated declaration review packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-10-generated-declarations-${{ env.CANDIDATE_SHA }}
+          path: unit-10-validation/
+          if-no-files-found: error
