@@ -23,7 +23,7 @@ env:
 jobs:
   model:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Check out validation carrier
         uses: actions/checkout@v4
@@ -50,12 +50,8 @@ jobs:
             //types:test/transforms/globals.spec \
             --test_output=errors
 
-      - name: Run every TypeScript spec target
-        run: |
-          mapfile -t targets < <(bazelisk query 'filter("\\.spec$", tests(//types:all))')
-          printf 'types_spec_target=%s\n' "${targets[@]}"
-          test "${#targets[@]}" -gt 0
-          bazelisk test "${targets[@]}" --test_output=errors
+      - name: Run complete types test package
+        run: bazelisk test //types/... --test_output=errors
 
   generated-output:
     needs: model
