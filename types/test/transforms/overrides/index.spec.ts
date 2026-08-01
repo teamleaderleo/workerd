@@ -81,7 +81,7 @@ test('createOverrideDefineTransformer: applies type renames', () => {
 }
 interface Root1 {
     prop: RenamedThing;
-    method(param0: RenamedThing): RenamedThing;
+    method(this: __JSG_GENERATED_RECEIVER__<Root1>, param0: RenamedThing): RenamedThing;
     Thing: typeof RenamedThing;
     newProp: RenamedThing;
 }
@@ -231,14 +231,14 @@ test('createOverrideDefineTransformer: applies method overrides', () => {
   assert.strictEqual(
     printDefinitionsWithOverrides(root),
     `declare abstract class Root1 {
-    one(): number;
+    one(this: __JSG_GENERATED_RECEIVER__<Root1>): number;
     static one(): 1;
-    two(): 2;
+    two(this: __JSG_GENERATED_RECEIVER__<Root1>): 2;
     static two(): number;
-    get(key: string, type: "text"): Promise<string | null>;
-    get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
-    get<T>(key: string, type: "json"): Promise<T | null>;
-    thing(param0: boolean): boolean;
+    get(this: __JSG_GENERATED_RECEIVER__<Root1>, key: string, type: "text"): Promise<string | null>;
+    get(this: __JSG_GENERATED_RECEIVER__<Root1>, key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
+    get<T>(this: __JSG_GENERATED_RECEIVER__<Root1>, key: string, type: "json"): Promise<T | null>;
+    thing(this: __JSG_GENERATED_RECEIVER__<Root1>, param0: boolean): boolean;
 }
 `
   );
@@ -289,8 +289,8 @@ test('createOverrideDefineTransformer: applies type parameter overrides', () => 
     type: Type;
 }
 interface Root1<R> {
-    get(): RenamedStruct;
-    read(): Promise<R>;
+    get(this: __JSG_GENERATED_RECEIVER__<Root1<R>>): RenamedStruct;
+    read(this: __JSG_GENERATED_RECEIVER__<Root1<R>>): Promise<R>;
 }
 `
   );

@@ -8,6 +8,7 @@ import ts from 'typescript';
 import { generateDefinitions } from './generator';
 import { printNodeList, printer } from './print';
 import { SourcesMap, createMemoryProgram } from './program';
+import { createReceiverCleanupTransformer } from './receiver';
 import {
   CommentsData,
   compileOverridesDefines,
@@ -81,6 +82,7 @@ export function printDefinitions(
     // Run global scope transformer after overrides so members added in
     // overrides are extracted
     createGlobalScopeTransformer(checker),
+    createReceiverCleanupTransformer(),
     createClassToInterfaceTransformer(['Request', 'Response', 'WebSocket']),
     // TODO: enable this once we've figured out how not to expose internal modules
     // createInternalNamespaceTransformer(root, structureMap),
