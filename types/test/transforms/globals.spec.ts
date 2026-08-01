@@ -2,16 +2,16 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import assert from "assert";
-import { test } from "node:test";
-import path from "path";
-import ts from "typescript";
-import { printer } from "../../src/print";
-import { createMemoryProgram } from "../../src/program";
-import { createReceiverCleanupTransformer } from "../../src/receiver";
-import { createGlobalScopeTransformer } from "../../src/transforms";
+import assert from 'assert';
+import { test } from 'node:test';
+import path from 'path';
+import ts from 'typescript';
+import { printer } from '../../src/print';
+import { createMemoryProgram } from '../../src/program';
+import { createReceiverCleanupTransformer } from '../../src/receiver';
+import { createGlobalScopeTransformer } from '../../src/transforms';
 
-test("createGlobalScopeTransformer: extracts global scope", () => {
+test('createGlobalScopeTransformer: extracts global scope', () => {
   const source = `type WorkerGlobalScopeEventMap = {
     fetch: Event;
     scheduled: Event;
@@ -45,7 +45,7 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
 }
 `;
 
-  const sourcePath = path.resolve(__dirname, "source.ts");
+  const sourcePath = path.resolve(__dirname, 'source.ts');
   const sources = new Map([[sourcePath, source]]);
   const program = createMemoryProgram(sources);
   const checker = program.getTypeChecker();
@@ -61,12 +61,12 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
   const output = printer.printFile(result.transformed[0]);
   const cleanedSource = source
     .replaceAll(
-      "this: __JSG_GENERATED_RECEIVER__<EventTarget<EventMap>>",
-      "this: EventTarget<EventMap>"
+      'this: __JSG_GENERATED_RECEIVER__<EventTarget<EventMap>>',
+      'this: EventTarget<EventMap>'
     )
     .replace(
-      "this: __JSG_GENERATED_RECEIVER__<ServiceWorkerGlobalScope>",
-      "this: ServiceWorkerGlobalScope | typeof globalThis | null | void"
+      'this: __JSG_GENERATED_RECEIVER__<ServiceWorkerGlobalScope>',
+      'this: ServiceWorkerGlobalScope | typeof globalThis | null | void'
     );
   assert.strictEqual(
     output,
@@ -86,7 +86,7 @@ declare const console: Console;
   );
 });
 
-test("createGlobalScopeTransformer: inlining type parameters in heritage", () => {
+test('createGlobalScopeTransformer: inlining type parameters in heritage', () => {
   const source = `declare class A<T> {
     thing: T;
 }
@@ -96,7 +96,7 @@ declare class ServiceWorkerGlobalScope extends B<string> {
 }
 `;
 
-  const sourcePath = path.resolve(__dirname, "source.ts");
+  const sourcePath = path.resolve(__dirname, 'source.ts');
   const sources = new Map([[sourcePath, source]]);
   const program = createMemoryProgram(sources);
   const checker = program.getTypeChecker();
@@ -117,7 +117,7 @@ declare class ServiceWorkerGlobalScope extends B<string> {
   );
 });
 
-test("createGlobalScopeTransformer: resolves heritage in lexical scope", () => {
+test('createGlobalScopeTransformer: resolves heritage in lexical scope', () => {
   const source = `declare class Base {
     topLevel(): string;
 }
@@ -130,7 +130,7 @@ declare class ServiceWorkerGlobalScope extends Base {
 }
 `;
 
-  const sourcePath = path.resolve(__dirname, "source.ts");
+  const sourcePath = path.resolve(__dirname, 'source.ts');
   const sources = new Map([[sourcePath, source]]);
   const program = createMemoryProgram(sources);
   const checker = program.getTypeChecker();
@@ -149,4 +149,57 @@ declare class ServiceWorkerGlobalScope extends Base {
       `declare function topLevel(): string;
 `
   );
+});
+
+test('createGlobalScopeTransformer: uses transformed top-level heritage declarations', () => {
+  const source = `declare class Base {
+    stale(): string;
+}
+declare class ServiceWorkerGlobalScope extends Base {
+}
+`;
+
+  const sourcePath = path.resolve(__dirname, 'transformed-source.ts');
+  const sources = new Map([[sourcePath, source]]);
+  const program = createMemoryProgram(sources);
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFile(sourcePath);
+  assert(sourceFile !== undefined);
+
+  const replaceBase: ts.TransformerFactory<ts.SourceFile> = (ctx) => {
+    const visitor: ts.Visitor = (node) => {
+      if (ts.isClassDeclaration(node) && node.name?.text === 'Base') {
+        const transformed = ctx.factory.createMethodDeclaration(
+          /* modifiers */ undefined,
+          /* asteriskToken */ undefined,
+          'transformed',
+          /* questionToken */ undefined,
+          /* typeParameters */ undefined,
+          [],
+          ctx.factory.createKeywordTypeNode(ts.SyntaxKind.NumberKeyword),
+          /* body */ undefined
+        );
+        return ctx.factory.updateClassDeclaration(
+          node,
+          node.modifiers,
+          node.name,
+          node.typeParameters,
+          node.heritageClauses,
+          ctx.factory.createNodeArray([transformed])
+        );
+      }
+      return ts.visitEachChild(node, visitor, ctx);
+    };
+    return (node) => ts.visitEachChild(node, visitor, ctx);
+  };
+
+  const result = ts.transform(sourceFile, [
+    replaceBase,
+    createGlobalScopeTransformer(checker),
+  ]);
+  assert.strictEqual(result.transformed.length, 1);
+
+  const output = printer.printFile(result.transformed[0]);
+  assert.match(output, /declare function transformed\(\): number;/);
+  assert.doesNotMatch(output, /declare function stale\(\): string;/);
 });
