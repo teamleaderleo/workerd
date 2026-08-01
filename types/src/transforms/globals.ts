@@ -4,6 +4,7 @@
 
 import assert from "node:assert";
 import ts from "typescript";
+import { getGeneratedReceiverOwner } from "../receiver";
 
 // Copies all properties of `ServiceWorkerGlobalScope` and its superclasses into
 // the global scope:
@@ -40,10 +41,33 @@ export function createGlobalScopeTransformer(
 ): ts.TransformerFactory<ts.SourceFile> {
   return (ctx) => {
     return (node) => {
-      const visitor = createGlobalScopeVisitor(ctx, checker);
+      const declarations = collectNamedDeclarations(node);
+      const visitor = createGlobalScopeVisitor(ctx, checker, declarations);
       return ts.visitEachChild(node, visitor, ctx);
     };
   };
+}
+
+type NamedDeclaration = ts.InterfaceDeclaration | ts.ClassDeclaration;
+
+function collectNamedDeclarations(
+  sourceFile: ts.SourceFile
+): Map<string, NamedDeclaration[]> {
+  const declarations = new Map<string, NamedDeclaration[]>();
+  const visitor = (node: ts.Node): void => {
+    if (
+      (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) &&
+      node.name !== undefined
+    ) {
+      const name = node.name.text;
+      const named = declarations.get(name) ?? [];
+      named.push(node);
+      declarations.set(name, named);
+    }
+    ts.forEachChild(node, visitor);
+  };
+  visitor(sourceFile);
+  return declarations;
 }
 
 // Copy type nodes everywhere they are referenced
@@ -69,6 +93,137 @@ function createInlineVisitor(
   return visitor;
 }
 
+function createContextGlobalParameters(
+  ctx: ts.TransformationContext,
+  parameters: readonly ts.ParameterDeclaration[]
+): readonly ts.ParameterDeclaration[] {
+  const receiver = parameters[0];
+  const ownerType = getGeneratedReceiverOwner(receiver);
+  if (receiver === undefined || ownerType === undefined) return parameters;
+
+  const receiverType = ctx.factory.createUnionTypeNode([
+    ownerType,
+    ctx.factory.createTypeQueryNode(
+      ctx.factory.createIdentifier("globalThis")
+    ),
+    ctx.factory.createLiteralTypeNode(ctx.factory.createNull()),
+    ctx.factory.createKeywordTypeNode(ts.SyntaxKind.VoidKeyword),
+  ]);
+  const globalReceiver = ctx.factory.updateParameterDeclaration(
+    receiver,
+    receiver.modifiers,
+    receiver.dotDotDotToken,
+    receiver.name,
+    receiver.questionToken,
+    receiverType,
+    receiver.initializer
+  );
+  return ctx.factory.createNodeArray([
+    globalReceiver,
+    ...parameters.slice(1),
+  ]);
+}
+
+function updateMethodParameters(
+  ctx: ts.TransformationContext,
+  node: ts.MethodSignature,
+  parameters: readonly ts.ParameterDeclaration[]
+): ts.MethodSignature;
+function updateMethodParameters(
+  ctx: ts.TransformationContext,
+  node: ts.MethodDeclaration,
+  parameters: readonly ts.ParameterDeclaration[]
+): ts.MethodDeclaration;
+function updateMethodParameters(
+  ctx: ts.TransformationContext,
+  node: ts.MethodSignature | ts.MethodDeclaration,
+  parameters: readonly ts.ParameterDeclaration[]
+): ts.MethodSignature | ts.MethodDeclaration {
+  if (parameters === node.parameters) return node;
+  if (ts.isMethodSignature(node)) {
+    return ctx.factory.updateMethodSignature(
+      node,
+      node.modifiers,
+      node.name,
+      node.questionToken,
+      node.typeParameters,
+      ctx.factory.createNodeArray(parameters),
+      node.type
+    );
+  }
+  return ctx.factory.updateMethodDeclaration(
+    node,
+    node.modifiers,
+    node.asteriskToken,
+    node.name,
+    node.questionToken,
+    node.typeParameters,
+    ctx.factory.createNodeArray(parameters),
+    node.type,
+    node.body
+  );
+}
+
+function withContextGlobalReceiver(
+  ctx: ts.TransformationContext,
+  member: ts.ClassElement | ts.TypeElement
+): ts.ClassElement | ts.TypeElement {
+  if (ts.isMethodSignature(member)) {
+    return updateMethodParameters(
+      ctx,
+      member,
+      createContextGlobalParameters(ctx, member.parameters)
+    );
+  }
+  if (ts.isMethodDeclaration(member)) {
+    return updateMethodParameters(
+      ctx,
+      member,
+      createContextGlobalParameters(ctx, member.parameters)
+    );
+  }
+  return member;
+}
+
+function widenContextGlobalScopeDeclaration(
+  ctx: ts.TransformationContext,
+  node: ts.InterfaceDeclaration | ts.ClassDeclaration
+): ts.InterfaceDeclaration | ts.ClassDeclaration {
+  if (ts.isInterfaceDeclaration(node)) {
+    const members = node.members.map((member) =>
+      withContextGlobalReceiver(ctx, member) as ts.TypeElement
+    );
+    return ctx.factory.updateInterfaceDeclaration(
+      node,
+      node.modifiers,
+      node.name,
+      node.typeParameters,
+      node.heritageClauses,
+      ctx.factory.createNodeArray(members)
+    );
+  }
+  const members = node.members.map((member) =>
+    withContextGlobalReceiver(ctx, member) as ts.ClassElement
+  );
+  return ctx.factory.updateClassDeclaration(
+    node,
+    node.modifiers,
+    node.name,
+    node.typeParameters,
+    node.heritageClauses,
+    ctx.factory.createNodeArray(members)
+  );
+}
+
+function hasStaticModifier(node: ts.Node): boolean {
+  return (
+    ts.canHaveModifiers(node) &&
+    ts
+      .getModifiers(node)
+      ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true
+  );
+}
+
 // Call with each potential method/property that could be extracted into a
 // global function/const.
 export function maybeExtractGlobalNode(
@@ -76,6 +231,10 @@ export function maybeExtractGlobalNode(
   node: ts.Node,
   modifiers?: readonly ts.ModifierLike[]
 ): ts.Statement | undefined {
+  // Static members live on constructors. They are not inherited by global-scope
+  // instances and therefore cannot represent ambient global operations.
+  if (hasStaticModifier(node)) return undefined;
+
   if (
     (ts.isMethodSignature(node) || ts.isMethodDeclaration(node)) &&
     ts.isIdentifier(node.name)
@@ -113,9 +272,41 @@ export function maybeExtractGlobalNode(
   }
 }
 
+function getHeritageDeclaration(
+  checker: ts.TypeChecker,
+  declarations: Map<string, NamedDeclaration[]>,
+  originalSuperType: ts.ExpressionWithTypeArguments,
+  transformedSuperType: ts.ExpressionWithTypeArguments
+): NamedDeclaration {
+  const symbol = checker.getSymbolAtLocation(originalSuperType.expression);
+  if (symbol !== undefined) {
+    const symbolDeclarations = symbol.getDeclarations();
+    assert.strictEqual(symbolDeclarations?.length, 1);
+    const declaration = symbolDeclarations[0];
+    assert(
+      ts.isInterfaceDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration)
+    );
+    return declaration;
+  }
+
+  assert(
+    ts.isIdentifier(transformedSuperType.expression),
+    "Expected checker resolution for qualified heritage expression"
+  );
+  const candidates = declarations.get(transformedSuperType.expression.text);
+  assert.strictEqual(
+    candidates?.length,
+    1,
+    `Expected one generated declaration named ${transformedSuperType.expression.text}, got ${candidates?.length ?? 0}`
+  );
+  return candidates[0];
+}
+
 function createGlobalScopeVisitor(
   ctx: ts.TransformationContext,
-  checker: ts.TypeChecker
+  checker: ts.TypeChecker,
+  declarations: Map<string, NamedDeclaration[]>
 ): ts.Visitor {
   // Called with each class/interface that should have its methods/properties
   // extracted into global functions/consts. Recursively visits superclasses.
@@ -141,33 +332,36 @@ function createGlobalScopeVisitor(
 
     // Recursively extract from all superclasses
     if (node.heritageClauses !== undefined) {
-      for (let clause of node.heritageClauses) {
+      for (const originalClause of node.heritageClauses) {
         // Handle case where type param appears in heritage clause:
         // ```ts
         // class A<T> {}     // ↓
         // class B<T> extends A<T> {}
         // class C extends B<string> {}
         // ```
-        clause = ts.visitNode(clause, inlineVisitor, ts.isHeritageClause);
+        const transformedClause = ts.visitNode(
+          originalClause,
+          inlineVisitor,
+          ts.isHeritageClause
+        );
+        assert.strictEqual(
+          transformedClause.types.length,
+          originalClause.types.length
+        );
 
-        for (const superType of clause.types) {
-          const superTypeSymbol = checker.getSymbolAtLocation(
-            superType.expression
-          );
-          assert(superTypeSymbol !== undefined);
-          const superTypeDeclarations = superTypeSymbol.getDeclarations();
-          assert.strictEqual(superTypeDeclarations?.length, 1);
-          const superTypeDeclaration = superTypeDeclarations[0];
-          assert(
-            ts.isInterfaceDeclaration(superTypeDeclaration) ||
-              ts.isClassDeclaration(superTypeDeclaration)
+        transformedClause.types.forEach((superType, index) => {
+          const superTypeDeclaration = getHeritageDeclaration(
+            checker,
+            declarations,
+            originalClause.types[index],
+            superType
           );
           nodes.push(
             // Pass any defined type arguments for inlining in extracted nodes
             // (e.g. `...extends EventTarget<WorkerGlobalScopeEventMap>`).
             ...extractGlobalNodes(superTypeDeclaration, superType.typeArguments)
           );
-        }
+        });
       }
     }
 
@@ -176,7 +370,8 @@ function createGlobalScopeVisitor(
       ctx.factory.createToken(ts.SyntaxKind.DeclareKeyword),
     ];
     for (const member of node.members) {
-      const maybeNode = maybeExtractGlobalNode(ctx, member, modifiers);
+      const globalMember = withContextGlobalReceiver(ctx, member);
+      const maybeNode = maybeExtractGlobalNode(ctx, globalMember, modifiers);
       if (maybeNode !== undefined) {
         nodes.push(ts.visitNode(maybeNode, inlineVisitor));
       }
@@ -193,7 +388,8 @@ function createGlobalScopeVisitor(
       node.name !== undefined &&
       node.name.text === "ServiceWorkerGlobalScope"
     ) {
-      return [node, ...extractGlobalNodes(node)];
+      const globalScope = widenContextGlobalScopeDeclaration(ctx, node);
+      return [globalScope, ...extractGlobalNodes(globalScope)];
     }
     return node;
   };

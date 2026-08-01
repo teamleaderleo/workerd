@@ -6,6 +6,11 @@ import assert from "node:assert";
 import ts from "typescript";
 import { isUnsatisfiable } from "../../generator/type";
 import { printNode } from "../../print";
+import {
+  getGeneratedReceiverOwner,
+  isThisParameter,
+  updateGeneratedReceiverOwner,
+} from "../../receiver";
 import { ensureStatementModifiers, hasModifier } from "../helpers";
 import { maybeGetDefines, maybeGetOverride } from "./compiler";
 
@@ -144,6 +149,179 @@ function findMemberIndex<Member extends ts.ClassElement | ts.TypeElement>(
   );
 }
 
+type MethodMember = ts.MethodDeclaration | ts.MethodSignature;
+
+function updateMethodParameters(
+  member: MethodMember,
+  parameters: ts.NodeArray<ts.ParameterDeclaration>
+): MethodMember {
+  if (ts.isMethodDeclaration(member)) {
+    return ts.factory.updateMethodDeclaration(
+      member,
+      member.modifiers,
+      member.asteriskToken,
+      member.name,
+      member.questionToken,
+      member.typeParameters,
+      parameters,
+      member.type,
+      member.body
+    );
+  }
+  return ts.factory.updateMethodSignature(
+    member,
+    member.modifiers,
+    member.name,
+    member.questionToken,
+    member.typeParameters,
+    parameters,
+    member.type
+  );
+}
+
+function cloneParameter(
+  parameter: ts.ParameterDeclaration
+): ts.ParameterDeclaration {
+  return ts.factory.createParameterDeclaration(
+    parameter.modifiers,
+    parameter.dotDotDotToken,
+    parameter.name,
+    parameter.questionToken,
+    parameter.type,
+    parameter.initializer
+  );
+}
+
+function specializeGeneratedReceiver(
+  receiver: ts.ParameterDeclaration,
+  typeParameters: ts.NodeArray<ts.TypeParameterDeclaration> | undefined
+): ts.ParameterDeclaration {
+  const ownerType = getGeneratedReceiverOwner(receiver);
+  if (
+    ownerType === undefined ||
+    typeParameters === undefined ||
+    typeParameters.length === 0 ||
+    !ts.isTypeReferenceNode(ownerType) ||
+    ownerType.typeArguments !== undefined
+  ) {
+    return receiver;
+  }
+  const typeArguments = ts.factory.createNodeArray<ts.TypeNode>(
+    typeParameters.map((parameter) =>
+      ts.factory.createTypeReferenceNode(parameter.name)
+    )
+  );
+  const specializedOwner = ts.factory.updateTypeReferenceNode(
+    ownerType,
+    ownerType.typeName,
+    typeArguments
+  );
+  return updateGeneratedReceiverOwner(receiver, specializedOwner);
+}
+
+function specializeMemberReceiver<Member extends ts.ClassElement | ts.TypeElement>(
+  member: Member,
+  typeParameters: ts.NodeArray<ts.TypeParameterDeclaration> | undefined
+): Member {
+  if (!ts.isMethodDeclaration(member) && !ts.isMethodSignature(member)) {
+    return member;
+  }
+  const receiver = member.parameters[0];
+  if (!isThisParameter(receiver)) return member;
+  const specializedReceiver = specializeGeneratedReceiver(
+    receiver,
+    typeParameters
+  );
+  if (specializedReceiver === receiver) return member;
+  const parameters = ts.factory.createNodeArray([
+    specializedReceiver,
+    ...member.parameters.slice(1),
+  ]);
+  return updateMethodParameters(member, parameters) as unknown as Member;
+}
+
+// Overrides predate generated receiver parameters. A missing `this` on an
+// override that replaces a generated method inherits the generated policy.
+// Any explicit receiver, including `this: void` and custom unions, is preserved.
+function inheritGeneratedReceiver<Member extends ts.ClassElement | ts.TypeElement>(
+  generated: ts.ClassElement | ts.TypeElement,
+  override: Member
+): Member {
+  if (!ts.isMethodDeclaration(override) && !ts.isMethodSignature(override)) {
+    return override;
+  }
+  if (!ts.isMethodDeclaration(generated) && !ts.isMethodSignature(generated)) {
+    return override;
+  }
+  const generatedReceiver = generated.parameters[0];
+  if (
+    getGeneratedReceiverOwner(generatedReceiver) === undefined ||
+    isThisParameter(override.parameters[0])
+  ) {
+    return override;
+  }
+  const parameters = ts.factory.createNodeArray([
+    cloneParameter(generatedReceiver),
+    ...override.parameters,
+  ]);
+  return updateMethodParameters(override, parameters) as unknown as Member;
+}
+
+function preserveReplacementReceivers(
+  ctx: ts.TransformationContext,
+  generated: ts.ClassDeclaration | ts.InterfaceDeclaration,
+  override: ts.Statement
+): ts.Statement {
+  if (!ts.isClassDeclaration(override) && !ts.isInterfaceDeclaration(override)) {
+    return override;
+  }
+
+  const typeParameters = override.typeParameters;
+  const generatedMembers = [...generated.members].map((member) =>
+    specializeMemberReceiver(member, typeParameters)
+  );
+
+  if (ts.isClassDeclaration(override)) {
+    const members = override.members.map((member) => {
+      if (!ts.isMethodDeclaration(member)) return member;
+      const generatedIndex = findMemberIndex(
+        generatedMembers,
+        getMemberKey(member)
+      );
+      return generatedIndex === -1
+        ? member
+        : inheritGeneratedReceiver(generatedMembers[generatedIndex], member);
+    });
+    return ctx.factory.updateClassDeclaration(
+      override,
+      override.modifiers,
+      override.name,
+      override.typeParameters,
+      override.heritageClauses,
+      ctx.factory.createNodeArray(members)
+    );
+  }
+
+  const members = override.members.map((member) => {
+    if (!ts.isMethodSignature(member)) return member;
+    const generatedIndex = findMemberIndex(
+      generatedMembers,
+      getMemberKey(member)
+    );
+    return generatedIndex === -1
+      ? member
+      : inheritGeneratedReceiver(generatedMembers[generatedIndex], member);
+  });
+  return ctx.factory.updateInterfaceDeclaration(
+    override,
+    override.modifiers,
+    override.name,
+    override.typeParameters,
+    override.heritageClauses,
+    ctx.factory.createNodeArray(members)
+  );
+}
+
 // Merges generated members with overrides according to the following rules:
 // 1. Members in the override but not in the generated type are inserted
 // 2. If an override has the same key as a member in the generated type, the
@@ -153,9 +331,12 @@ function findMemberIndex<Member extends ts.ClassElement | ts.TypeElement>(
 function mergeMembers<Member extends ts.ClassElement | ts.TypeElement>(
   generated: ts.NodeArray<Member>,
   overrides: ts.NodeArray<ts.ClassElement>,
-  transformer: (member: ts.ClassElement) => Member
+  transformer: (member: ts.ClassElement) => Member,
+  typeParameters?: ts.NodeArray<ts.TypeParameterDeclaration>
 ): Member[] {
-  const result = [...generated];
+  const result = [...generated].map((member) =>
+    specializeMemberReceiver(member, typeParameters)
+  );
   const grouped = groupMembersByKey(overrides);
   for (const [key, overrideMembers] of grouped) {
     const filteredOverrideMembers = overrideMembers.filter((member) => {
@@ -168,7 +349,7 @@ function mergeMembers<Member extends ts.ClassElement | ts.TypeElement>(
     });
     // Transform all class elements into the correct member type. If `Member` is
     // `ts.ClassElement` already, `transformer` will be the identify function.
-    const transformedOverrideMembers = filteredOverrideMembers.map(transformer);
+    let transformedOverrideMembers = filteredOverrideMembers.map(transformer);
 
     // Try to find index of existing generated member with same key
     const index = findMemberIndex(result, key);
@@ -177,6 +358,9 @@ function mergeMembers<Member extends ts.ClassElement | ts.TypeElement>(
       result.push(...transformedOverrideMembers);
     } else {
       const member = result[index];
+      transformedOverrideMembers = transformedOverrideMembers.map((override) =>
+        inheritGeneratedReceiver(member, override)
+      );
       const nextIndex = findMemberIndex(result, key, index + 1);
       if (
         ts.isGetAccessorDeclaration(member) ||
@@ -279,7 +463,12 @@ function applyOverride<
 
   if (isReplacement) {
     assert(override !== undefined);
-    return ensureStatementModifiers(ctx, override, {
+    const replacement = preserveReplacementReceivers(
+      ctx,
+      node,
+      override
+    );
+    return ensureStatementModifiers(ctx, replacement, {
       declare: true,
       export: false,
     });
@@ -327,27 +516,37 @@ function createOverrideDefineVisitor(
     if (ts.isClassDeclaration(node) && node.name !== undefined) {
       defines = maybeGetDefines(overrideCtx.program, node.name.text);
       node = applyOverride(ctx, overrideCtx, node, (node, override) => {
+        const typeParameters = override.typeParameters ?? node.typeParameters;
         return ctx.factory.updateClassDeclaration(
           node,
           node.modifiers,
           override.name,
-          override.typeParameters ?? node.typeParameters,
+          typeParameters,
           override.heritageClauses ?? node.heritageClauses,
-          mergeMembers(node.members, override.members, (member) => member)
+          mergeMembers(
+            node.members,
+            override.members,
+            (member) => member,
+            typeParameters
+          )
         );
       });
     } else if (ts.isInterfaceDeclaration(node)) {
       defines = maybeGetDefines(overrideCtx.program, node.name.text);
       node = applyOverride(ctx, overrideCtx, node, (node, override) => {
         assert(override.name !== undefined);
+        const typeParameters = override.typeParameters ?? node.typeParameters;
         return ctx.factory.updateInterfaceDeclaration(
           node,
           node.modifiers,
           override.name,
-          override.typeParameters ?? node.typeParameters,
+          typeParameters,
           override.heritageClauses ?? node.heritageClauses,
-          mergeMembers(node.members, override.members, (member) =>
-            classToTypeElement(ctx, member)
+          mergeMembers(
+            node.members,
+            override.members,
+            (member) => classToTypeElement(ctx, member),
+            typeParameters
           )
         );
       });
