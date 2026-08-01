@@ -2,9 +2,9 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import assert from "node:assert";
-import ts from "typescript";
-import { getGeneratedReceiverOwner } from "../receiver";
+import assert from 'node:assert';
+import ts from 'typescript';
+import { getGeneratedReceiverOwner } from '../receiver';
 
 // Copies all properties of `ServiceWorkerGlobalScope` and its superclasses into
 // the global scope:
@@ -54,19 +54,18 @@ function collectNamedDeclarations(
   sourceFile: ts.SourceFile
 ): Map<string, NamedDeclaration[]> {
   const declarations = new Map<string, NamedDeclaration[]>();
-  const visitor = (node: ts.Node): void => {
+  for (const statement of sourceFile.statements) {
     if (
-      (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) &&
-      node.name !== undefined
+      (ts.isInterfaceDeclaration(statement) ||
+        ts.isClassDeclaration(statement)) &&
+      statement.name !== undefined
     ) {
-      const name = node.name.text;
+      const name = statement.name.text;
       const named = declarations.get(name) ?? [];
-      named.push(node);
+      named.push(statement);
       declarations.set(name, named);
     }
-    ts.forEachChild(node, visitor);
-  };
-  visitor(sourceFile);
+  }
   return declarations;
 }
 
@@ -103,9 +102,7 @@ function createContextGlobalParameters(
 
   const receiverType = ctx.factory.createUnionTypeNode([
     ownerType,
-    ctx.factory.createTypeQueryNode(
-      ctx.factory.createIdentifier("globalThis")
-    ),
+    ctx.factory.createTypeQueryNode(ctx.factory.createIdentifier('globalThis')),
     ctx.factory.createLiteralTypeNode(ctx.factory.createNull()),
     ctx.factory.createKeywordTypeNode(ts.SyntaxKind.VoidKeyword),
   ]);
@@ -118,10 +115,7 @@ function createContextGlobalParameters(
     receiverType,
     receiver.initializer
   );
-  return ctx.factory.createNodeArray([
-    globalReceiver,
-    ...parameters.slice(1),
-  ]);
+  return ctx.factory.createNodeArray([globalReceiver, ...parameters.slice(1)]);
 }
 
 function updateMethodParameters(
@@ -190,8 +184,8 @@ function widenContextGlobalScopeDeclaration(
   node: ts.InterfaceDeclaration | ts.ClassDeclaration
 ): ts.InterfaceDeclaration | ts.ClassDeclaration {
   if (ts.isInterfaceDeclaration(node)) {
-    const members = node.members.map((member) =>
-      withContextGlobalReceiver(ctx, member) as ts.TypeElement
+    const members = node.members.map(
+      (member) => withContextGlobalReceiver(ctx, member) as ts.TypeElement
     );
     return ctx.factory.updateInterfaceDeclaration(
       node,
@@ -202,8 +196,8 @@ function widenContextGlobalScopeDeclaration(
       ctx.factory.createNodeArray(members)
     );
   }
-  const members = node.members.map((member) =>
-    withContextGlobalReceiver(ctx, member) as ts.ClassElement
+  const members = node.members.map(
+    (member) => withContextGlobalReceiver(ctx, member) as ts.ClassElement
   );
   return ctx.factory.updateClassDeclaration(
     node,
@@ -220,7 +214,8 @@ function hasStaticModifier(node: ts.Node): boolean {
     ts.canHaveModifiers(node) &&
     ts
       .getModifiers(node)
-      ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true
+      ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+      true
   );
 }
 
@@ -287,12 +282,29 @@ function getHeritageDeclaration(
       ts.isInterfaceDeclaration(declaration) ||
         ts.isClassDeclaration(declaration)
     );
+
+    // The checker points at the pre-transform source. For top-level
+    // declarations, use that symbol only to establish lexical identity,
+    // then continue from the corresponding transformed declaration so
+    // override-added members and generated receiver markers survive.
+    if (ts.isSourceFile(declaration.parent)) {
+      const candidates = declarations.get(declaration.name.text);
+      assert.strictEqual(
+        candidates?.length,
+        1,
+        `Expected one transformed top-level declaration named ${declaration.name.text}, got ${candidates?.length ?? 0}`
+      );
+      return candidates[0];
+    }
+
+    // A nested declaration belongs to a distinct lexical scope and has
+    // no transformed top-level replacement with the same identity.
     return declaration;
   }
 
   assert(
     ts.isIdentifier(transformedSuperType.expression),
-    "Expected checker resolution for qualified heritage expression"
+    'Expected checker resolution for qualified heritage expression'
   );
   const candidates = declarations.get(transformedSuperType.expression.text);
   assert.strictEqual(
@@ -386,7 +398,7 @@ function createGlobalScopeVisitor(
     if (
       (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) &&
       node.name !== undefined &&
-      node.name.text === "ServiceWorkerGlobalScope"
+      node.name.text === 'ServiceWorkerGlobalScope'
     ) {
       const globalScope = widenContextGlobalScopeDeclaration(ctx, node);
       return [globalScope, ...extractGlobalNodes(globalScope)];
