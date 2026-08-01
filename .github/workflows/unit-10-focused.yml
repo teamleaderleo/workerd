@@ -1,0 +1,117 @@
+# Fork-only execution carrier for Fieldwork upstream unit 10.
+# Keep this file out of any public Cloudflare contribution.
+name: Unit 10 receiver types validation
+
+on:
+  push:
+    branches:
+      - unit-10/receiver-aware-types-validation
+  pull_request:
+    branches:
+      - unit-10/receiver-aware-types
+    paths:
+      - .github/workflows/unit-10-focused.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 15214700fd3787c641c03cdc7ddda9fbf8ad73fa
+  BASE_SHA: 7cdc8c0e089287c8f3643f3a6f668ecdc221722a
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out validation carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-focused.yml'
+          test -z "$(git status --porcelain)"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Run focused transformer tests
+        run: |
+          bazelisk test \
+            //types:test/index.spec \
+            //types:test/transforms/overrides/index.spec \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
+            //types:test/transforms/globals.spec \
+            --test_output=errors
+
+      - name: Run every TypeScript spec target
+        run: |
+          mapfile -t targets < <(bazelisk query 'filter("\\.spec$", tests(//types:all))')
+          printf 'types_spec_target=%s\n' "${targets[@]}"
+          test "${#targets[@]}" -gt 0
+          bazelisk test "${targets[@]}" --test_output=errors
+
+  generated-output:
+    needs: model
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out validation carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-focused.yml'
+          test -z "$(git status --porcelain)"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Build baseline generated declarations
+        run: |
+          git switch --detach "${BASE_SHA}"
+          bazelisk build //types:types
+          mkdir -p /tmp/unit-10/baseline
+          cp -aL bazel-bin/types/definitions/. /tmp/unit-10/baseline/
+          find /tmp/unit-10/baseline -type f -print | sort > /tmp/unit-10/baseline-files.txt
+
+      - name: Build candidate declarations and run type fixture
+        run: |
+          git switch --detach "${CANDIDATE_SHA}"
+          bazelisk build //types:types
+          bazelisk test //types:test/types/fetch-receiver --test_output=errors
+          mkdir -p /tmp/unit-10/candidate
+          cp -aL bazel-bin/types/definitions/. /tmp/unit-10/candidate/
+          find /tmp/unit-10/candidate -type f -print | sort > /tmp/unit-10/candidate-files.txt
+
+      - name: Produce generated declaration compatibility diff
+        run: |
+          mkdir -p unit-10-validation
+          diff -ruN /tmp/unit-10/baseline /tmp/unit-10/candidate > unit-10-validation/generated-declarations.diff || test $? = 1
+          cp /tmp/unit-10/baseline-files.txt unit-10-validation/
+          cp /tmp/unit-10/candidate-files.txt unit-10-validation/
+          {
+            echo "base_sha=${BASE_SHA}"
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "changed_files=$(grep '^diff ' unit-10-validation/generated-declarations.diff | wc -l)"
+            echo "added_lines=$(grep '^+' unit-10-validation/generated-declarations.diff | grep -v '^+++' | wc -l)"
+            echo "removed_lines=$(grep '^-' unit-10-validation/generated-declarations.diff | grep -v '^---' | wc -l)"
+          } | tee unit-10-validation/summary.txt
+
+      - name: Upload generated declaration review packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-10-generated-declarations-${{ env.CANDIDATE_SHA }}
+          path: unit-10-validation/
+          if-no-files-found: error
