@@ -6,6 +6,11 @@ on:
   push:
     branches:
       - unit-10/final-validation-18a117c
+  pull_request:
+    branches:
+      - unit-10/receiver-aware-types
+    paths:
+      - .github/workflows/unit-10-final-validation.yml
   workflow_dispatch:
 
 permissions:
@@ -23,6 +28,7 @@ jobs:
       - name: Check out validation carrier
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Verify exact product head
@@ -58,6 +64,7 @@ jobs:
       - name: Check out validation carrier
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Verify exact product head
