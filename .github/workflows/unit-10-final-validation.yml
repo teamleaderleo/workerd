@@ -1,0 +1,98 @@
+# Fork-only execution carrier for Fieldwork upstream unit 10.
+# Keep this file out of any public Cloudflare contribution.
+name: Unit 10 final receiver types validation
+
+on:
+  push:
+    branches:
+      - unit-10/final-validation-18a117c
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 18a117c28773cd7aa0ee599e03439c5fbbf06584
+  BASE_SHA: 813c31394b9909d8f557bba14324db275bc12720
+
+jobs:
+  focused-and-types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out validation carrier
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-final-validation.yml'
+          test "$(git diff --name-only "${CANDIDATE_SHA}" HEAD)" = ".github/workflows/unit-10-final-validation.yml"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Run focused receiver targets
+        run: |
+          bazelisk test \
+            //types:test/index.spec \
+            //types:test/transforms/overrides/index.spec \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
+            //types:test/transforms/globals.spec \
+            //types:test/types/fetch-receiver \
+            --test_output=errors
+
+      - name: Run complete types package
+        run: bazelisk test //types/... --test_output=errors
+
+      - name: Run types lint target
+        run: bazelisk test //types:types_lib@eslint --test_output=errors
+
+  generated-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out validation carrier
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-final-validation.yml'
+          test "$(git diff --name-only "${CANDIDATE_SHA}" HEAD)" = ".github/workflows/unit-10-final-validation.yml"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Build generated declarations
+        run: bazelisk build //types
+
+      - name: Prepare snapshot and compatibility report
+        run: |
+          mkdir -p unit-10-validation/generated-snapshot
+          cp -aL bazel-bin/types/definitions/. unit-10-validation/generated-snapshot/
+          diff -ruN types/generated-snapshot unit-10-validation/generated-snapshot > unit-10-validation/generated-snapshot.diff || test $? = 1
+          ! grep -R '__JSG_GENERATED_RECEIVER__' unit-10-validation/generated-snapshot
+          {
+            echo "base_sha=${BASE_SHA}"
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "changed_files=$(grep '^diff ' unit-10-validation/generated-snapshot.diff | wc -l)"
+            echo "added_lines=$(grep '^+' unit-10-validation/generated-snapshot.diff | grep -v '^+++' | wc -l)"
+            echo "removed_lines=$(grep '^-' unit-10-validation/generated-snapshot.diff | grep -v '^---' | wc -l)"
+            echo "receiver_lines=$(grep -R 'this:' unit-10-validation/generated-snapshot | wc -l)"
+            echo "generated_marker_lines=0"
+          } | tee unit-10-validation/summary.txt
+          grep -R -n 'this:' unit-10-validation/generated-snapshot > unit-10-validation/receiver-lines.txt || true
+
+      - name: Upload generated snapshot review packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-10-generated-snapshot-${{ env.CANDIDATE_SHA }}
+          path: unit-10-validation/
+          if-no-files-found: error
