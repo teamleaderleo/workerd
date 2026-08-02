@@ -57,6 +57,114 @@ jobs:
       - name: Run types lint target
         run: bazelisk test //types:types_lib@eslint --test_output=errors
 
+  inherited-global-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out validation carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-final-validation.yml'
+          test "$(git diff --name-only "${CANDIDATE_SHA}" HEAD)" = ".github/workflows/unit-10-final-validation.yml"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Build workerd
+        run: bazelisk build //src/workerd/server:workerd
+
+      - name: Run inherited Worker-global receiver probe
+        run: |
+          mkdir -p /tmp/unit-10-receiver-probe/test-tmp
+          cat > /tmp/unit-10-receiver-probe/inherited-global-receiver.wd-test <<'CAPNP'
+          using Workerd = import "/workerd/workerd.capnp";
+
+          const unitTests :Workerd.Config = (
+            services = [(
+              name = "inherited-global-receiver",
+              worker = (
+                modules = [(
+                  name = "worker",
+                  esModule = embed "inherited-global-receiver.js",
+                )],
+              ),
+            )],
+          );
+          CAPNP
+          cat > /tmp/unit-10-receiver-probe/inherited-global-receiver.js <<'JS'
+          function expectSuccess(label, callback) {
+            try {
+              callback();
+            } catch (error) {
+              throw new Error(`${label} unexpectedly failed: ${error?.stack ?? error}`);
+            }
+          }
+
+          function expectIllegalInvocation(label, callback) {
+            let error;
+            try {
+              callback();
+            } catch (caught) {
+              error = caught;
+            }
+            if (!(error instanceof TypeError) || !String(error).includes("Illegal invocation")) {
+              throw new Error(`${label} expected Illegal invocation, got: ${error?.stack ?? error}`);
+            }
+          }
+
+          function cleanGlobal(type, handler) {
+            self.removeEventListener(type, handler);
+          }
+
+          export const inheritedGlobalReceivers = {
+            test() {
+              const type = "unit-10-inherited-receiver";
+              const handler = () => {};
+              const fromSelf = self.addEventListener;
+
+              expectSuccess("self-derived bare call", () => fromSelf(type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("self-derived undefined receiver", () => fromSelf.call(undefined, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("self-derived null receiver", () => fromSelf.call(null, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("self-derived globalThis receiver", () => fromSelf.call(globalThis, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("self-derived self receiver", () => fromSelf.call(self, type, handler));
+              cleanGlobal(type, handler);
+              expectIllegalInvocation("self-derived unrelated receiver", () => fromSelf.call({}, type, handler));
+
+              const target = new EventTarget();
+              const fromTarget = target.addEventListener;
+              expectSuccess("EventTarget-derived bare call", () => fromTarget(type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("EventTarget-derived undefined receiver", () => fromTarget.call(undefined, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("EventTarget-derived null receiver", () => fromTarget.call(null, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("EventTarget-derived globalThis receiver", () => fromTarget.call(globalThis, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("EventTarget-derived self receiver", () => fromTarget.call(self, type, handler));
+              cleanGlobal(type, handler);
+              expectSuccess("EventTarget-derived owning receiver", () => fromTarget.call(target, type, handler));
+              target.removeEventListener(type, handler);
+              expectIllegalInvocation("EventTarget-derived unrelated receiver", () => fromTarget.call({}, type, handler));
+            },
+          };
+          JS
+          bazel-bin/src/workerd/server/workerd test \
+            --predictable \
+            /tmp/unit-10-receiver-probe/inherited-global-receiver.wd-test \
+            --compat-date=2999-12-31 \
+            -dTEST_TMPDIR=/tmp/unit-10-receiver-probe/test-tmp
+
   generated-snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 360
