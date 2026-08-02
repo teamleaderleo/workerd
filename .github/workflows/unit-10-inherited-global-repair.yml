@@ -1,0 +1,298 @@
+# Fork-only execution carrier for Fieldwork upstream unit 10.
+# Keep this file out of any public Cloudflare contribution.
+name: Unit 10 inherited global receiver repair
+
+on:
+  push:
+    branches:
+      - unit-10/inherited-global-repair-validation
+  pull_request:
+    branches:
+      - unit-10/receiver-aware-types
+    paths:
+      - .github/workflows/unit-10-inherited-global-repair.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 18a117c28773cd7aa0ee599e03439c5fbbf06584
+  BASE_SHA: 813c31394b9909d8f557bba14324db275bc12720
+
+jobs:
+  repair-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out repair carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-inherited-global-repair.yml'
+          test "$(git diff --name-only "${CANDIDATE_SHA}" HEAD)" = ".github/workflows/unit-10-inherited-global-repair.yml"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Apply guarded ancestry repair
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = ROOT / path
+              text = file_path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one match, found {count}")
+              file_path.write_text(text.replace(old, new, 1))
+
+          def replace_exact_count(
+              path: str, old: str, new: str, expected: int
+          ) -> None:
+              file_path = ROOT / path
+              text = file_path.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise RuntimeError(
+                      f"{path}: expected {expected} matches for {old!r}, found {count}"
+                  )
+              file_path.write_text(text.replace(old, new))
+
+          globals_path = "types/src/transforms/globals.ts"
+
+          replace_once(
+              globals_path,
+              """      const declarations = collectNamedDeclarations(node);
+                const visitor = createGlobalScopeVisitor(ctx, checker, declarations);
+                return ts.visitEachChild(node, visitor, ctx);
+          """,
+              """      const declarations = collectNamedDeclarations(node);
+                const contextGlobalDeclarations = collectContextGlobalDeclarations(
+                  ctx,
+                  checker,
+                  declarations
+                );
+                const transformedDeclarations = replaceContextGlobalDeclarations(
+                  declarations,
+                  contextGlobalDeclarations
+                );
+                const visitor = createGlobalScopeVisitor(
+                  ctx,
+                  checker,
+                  transformedDeclarations,
+                  contextGlobalDeclarations
+                );
+                return ts.visitEachChild(node, visitor, ctx);
+          """,
+          )
+
+          replace_once(
+              globals_path,
+              "function widenContextGlobalScopeDeclaration(\n",
+              "function widenContextGlobalDeclaration(\n",
+          )
+
+          replace_once(
+              globals_path,
+              """function createGlobalScopeVisitor(
+            ctx: ts.TransformationContext,
+            checker: ts.TypeChecker,
+            declarations: Map<string, NamedDeclaration[]>
+          ): ts.Visitor {
+          """,
+              """function collectContextGlobalDeclarations(
+            ctx: ts.TransformationContext,
+            checker: ts.TypeChecker,
+            declarations: Map<string, NamedDeclaration[]>
+          ): Map<NamedDeclaration, NamedDeclaration> {
+            const roots = declarations.get('ServiceWorkerGlobalScope');
+            assert.strictEqual(
+              roots?.length,
+              1,
+              `Expected one transformed ServiceWorkerGlobalScope declaration, got ${roots?.length ?? 0}`
+            );
+
+            const result = new Map<NamedDeclaration, NamedDeclaration>();
+            const visit = (node: NamedDeclaration): void => {
+              if (result.has(node)) return;
+              result.set(node, widenContextGlobalDeclaration(ctx, node));
+
+              for (const clause of node.heritageClauses ?? []) {
+                for (const superType of clause.types) {
+                  const declaration = getHeritageDeclaration(
+                    checker,
+                    declarations,
+                    superType,
+                    superType
+                  );
+                  if (ts.isSourceFile(declaration.parent)) visit(declaration);
+                }
+              }
+            };
+
+            visit(roots[0]);
+            return result;
+          }
+
+          function replaceContextGlobalDeclarations(
+            declarations: Map<string, NamedDeclaration[]>,
+            replacements: Map<NamedDeclaration, NamedDeclaration>
+          ): Map<string, NamedDeclaration[]> {
+            const result = new Map<string, NamedDeclaration[]>();
+            for (const [name, named] of declarations) {
+              result.set(
+                name,
+                named.map((declaration) => replacements.get(declaration) ?? declaration)
+              );
+            }
+            return result;
+          }
+
+          function createGlobalScopeVisitor(
+            ctx: ts.TransformationContext,
+            checker: ts.TypeChecker,
+            declarations: Map<string, NamedDeclaration[]>,
+            contextGlobalDeclarations: Map<NamedDeclaration, NamedDeclaration>
+          ): ts.Visitor {
+          """,
+          )
+
+          replace_once(
+              globals_path,
+              """  const serviceWorkerGlobalScopeVisitor: ts.Visitor = (node) => {
+              if (
+                (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) &&
+                node.name !== undefined &&
+                node.name.text === 'ServiceWorkerGlobalScope'
+              ) {
+                const globalScope = widenContextGlobalScopeDeclaration(ctx, node);
+                return [globalScope, ...extractGlobalNodes(globalScope)];
+              }
+              return node;
+            };
+          """,
+              """  const serviceWorkerGlobalScopeVisitor: ts.Visitor = (node) => {
+              if (
+                (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node)) &&
+                node.name !== undefined
+              ) {
+                const contextGlobal = contextGlobalDeclarations.get(node);
+                if (node.name.text === 'ServiceWorkerGlobalScope') {
+                  assert(contextGlobal !== undefined);
+                  return [contextGlobal, ...extractGlobalNodes(contextGlobal)];
+                }
+                if (contextGlobal !== undefined) return contextGlobal;
+              }
+              return node;
+            };
+          """,
+          )
+
+          replace_once(
+              "types/test/transforms/globals.spec.ts",
+              """    .replaceAll(
+                'this: __JSG_GENERATED_RECEIVER__<EventTarget<EventMap>>',
+                'this: EventTarget<EventMap>'
+              )
+          """,
+              """    .replaceAll(
+                'this: __JSG_GENERATED_RECEIVER__<EventTarget<EventMap>>',
+                'this: EventTarget<EventMap> | typeof globalThis | null | void'
+              )
+          """,
+          )
+
+          replace_exact_count(
+              "types/test/index.spec.ts",
+              "this: EventTarget<EventMap>,",
+              "this: EventTarget<EventMap> | typeof globalThis | null | void,",
+              3,
+          )
+
+          inherited_type_test = ROOT / "types/test/types/inherited-global-receiver.ts"
+          if inherited_type_test.exists():
+              raise RuntimeError(f"{inherited_type_test}: file already exists")
+          inherited_type_test.write_text(
+              """const inheritedType = 'fetch' as const;
+          const inheritedHandler = (
+            event: WorkerGlobalScopeEventMap[typeof inheritedType]
+          ) => void event;
+
+          const fromSelf = self.addEventListener;
+          fromSelf(inheritedType, inheritedHandler);
+          fromSelf.call(undefined, inheritedType, inheritedHandler);
+          fromSelf.call(null, inheritedType, inheritedHandler);
+          fromSelf.call(globalThis, inheritedType, inheritedHandler);
+          fromSelf.call(self, inheritedType, inheritedHandler);
+
+          // @ts-expect-error Unrelated objects are not legal owning receivers.
+          fromSelf.call({}, inheritedType, inheritedHandler);
+
+          const target = new EventTarget<{ probe: Event }>();
+          const targetHandler = (event: Event) => void event;
+          const fromTarget = target.addEventListener;
+          fromTarget('probe', targetHandler);
+          fromTarget.call(undefined, 'probe', targetHandler);
+          fromTarget.call(null, 'probe', targetHandler);
+          fromTarget.call(globalThis, 'probe', targetHandler);
+          fromTarget.call(self, 'probe', targetHandler);
+          fromTarget.call(target, 'probe', targetHandler);
+
+          // @ts-expect-error Unrelated objects are not legal owning receivers.
+          fromTarget.call({}, 'probe', targetHandler);
+          """
+          )
+          PY
+          git add -N types/test/types/inherited-global-receiver.ts
+          git diff --check
+          git diff -- . ':(exclude).github/workflows/unit-10-inherited-global-repair.yml' > /tmp/unit-10-inherited-repair.patch
+
+      - name: Run repaired focused targets
+        run: |
+          bazelisk test \
+            //types:test/index.spec \
+            //types:test/transforms/globals.spec \
+            //types:test/types/inherited-global-receiver \
+            --test_output=errors
+
+      - name: Run repaired complete types package
+        run: bazelisk test //types/... --test_output=errors
+
+      - name: Build repaired generated declarations
+        run: bazelisk build //types
+
+      - name: Prepare repaired output review packet
+        run: |
+          mkdir -p unit-10-inherited-repair/patched-source
+          cp types/src/transforms/globals.ts unit-10-inherited-repair/patched-source/globals.ts
+          cp types/test/transforms/globals.spec.ts unit-10-inherited-repair/patched-source/globals.spec.ts
+          cp types/test/index.spec.ts unit-10-inherited-repair/patched-source/index.spec.ts
+          cp types/test/types/inherited-global-receiver.ts unit-10-inherited-repair/patched-source/inherited-global-receiver.ts
+          cp /tmp/unit-10-inherited-repair.patch unit-10-inherited-repair/
+          cp -aL bazel-bin/types/definitions unit-10-inherited-repair/generated-snapshot
+          diff -ruN types/generated-snapshot unit-10-inherited-repair/generated-snapshot > unit-10-inherited-repair/generated-snapshot.diff || test $? = 1
+          ! grep -R '__JSG_GENERATED_RECEIVER__' unit-10-inherited-repair/generated-snapshot
+          {
+            echo "base_sha=${BASE_SHA}"
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "changed_snapshot_files=$(grep '^diff ' unit-10-inherited-repair/generated-snapshot.diff | wc -l)"
+            echo "receiver_lines=$(grep -R 'this:' unit-10-inherited-repair/generated-snapshot | wc -l)"
+            echo "generated_marker_lines=0"
+          } | tee unit-10-inherited-repair/summary.txt
+
+      - name: Upload inherited repair review packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-10-inherited-global-repair-${{ env.CANDIDATE_SHA }}
+          path: unit-10-inherited-repair/
+          if-no-files-found: error
