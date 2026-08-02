@@ -13,13 +13,13 @@ test('main: generates types', async () => {
   const groups = root._initGroups(1);
   const group = groups.get(0);
   group.name = 'definitions';
-  const structures = group._initStructures(5);
+  const structures = group._initStructures(6);
 
   const eventTarget = structures.get(0);
   eventTarget.name = 'EventTarget';
   eventTarget.fullyQualifiedName = 'workerd::api::EventTarget';
   {
-    const members = eventTarget._initMembers(2);
+    const members = eventTarget._initMembers(6);
     members.get(0)._initConstructor();
     const method = members.get(1)._initMethod();
     method.name = 'addEventListener';
@@ -29,10 +29,34 @@ test('main: generates types', async () => {
       args.get(1)._initBuiltin().type = BuiltinType_Type.V8FUNCTION;
     }
     method._initReturnType().voidt = true;
+
+    const receiverFree = members.get(2)._initMethod();
+    receiverFree.name = 'receiverFree';
+    receiverFree._initArgs(1).get(0)._initString().name = 'kj::String';
+    receiverFree._initReturnType()._initString().name = 'kj::String';
+
+    const customReceiver = members.get(3)._initMethod();
+    customReceiver.name = 'customReceiver';
+    customReceiver._initArgs(1).get(0)._initString().name = 'kj::String';
+    customReceiver._initReturnType()._initString().name = 'kj::String';
+
+    const plain = members.get(4)._initMethod();
+    plain.name = 'plain';
+    plain._initArgs(1).get(0)._initString().name = 'kj::String';
+    plain._initReturnType()._initString().name = 'kj::String';
+
+    const detachable = members.get(5)._initMethod();
+    detachable.name = 'detachable';
+    detachable.static = true;
+    detachable._initArgs(1).get(0)._initString().name = 'kj::String';
+    detachable._initReturnType()._initString().name = 'kj::String';
   }
   eventTarget.tsDefine = 'interface Event {}';
   eventTarget.tsOverride = `<EventMap extends Record<string, Event> = Record<string, Event>> {
     addEventListener<Type extends keyof EventMap>(type: Type, handler: (event: EventMap[Type]) => void): void;
+    addEventListener(type: string, handler: (event: Event) => void): void;
+    receiverFree(this: void, value: string): string;
+    customReceiver(this: EventTarget<EventMap> | WorkerGlobalScope, value: string): string;
   }`;
 
   const workerGlobalScope = structures.get(1);
@@ -105,6 +129,23 @@ test('main: generates types', async () => {
     valueType._initValue()._initString().name = 'kj::String';
   }
 
+  const replacementTarget = structures.get(5);
+  replacementTarget.name = 'ReplacementTarget';
+  replacementTarget.fullyQualifiedName = 'workerd::api::ReplacementTarget';
+  replacementTarget.tsRoot = true;
+  {
+    const members = replacementTarget._initMembers(1);
+    const convert = members.get(0)._initMethod();
+    convert.name = 'convert';
+    convert._initArgs(1).get(0)._initString().name = 'kj::String';
+    convert._initReturnType()._initString().name = 'kj::String';
+  }
+  replacementTarget.tsOverride = `declare class ReplacementTarget {
+    convert(value: string): string;
+    convert(value: number): number;
+    explicit(this: void, value: string): string;
+  }`;
+
   // https://bazel.build/reference/test-encyclopedia#initial-conditions
   const tmpPath = process.env.TEST_TMPDIR;
   assert(tmpPath !== undefined);
@@ -160,7 +201,17 @@ declare class EventTarget<EventMap extends Record<string, Event> = Record<string
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener)
      */
-    addEventListener<Type extends keyof EventMap>(type: Type, handler: (event: EventMap[Type]) => void): void;
+    addEventListener<Type extends keyof EventMap>(this: EventTarget<EventMap>, type: Type, handler: (event: EventMap[Type]) => void): void;
+    /**
+     * The **\`addEventListener()\`** method of the EventTarget interface sets up a function that will be called whenever the specified event is delivered to the target.
+     *
+     * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener)
+     */
+    addEventListener(this: EventTarget<EventMap>, type: string, handler: (event: Event) => void): void;
+    receiverFree(this: void, value: string): string;
+    customReceiver(this: EventTarget<EventMap> | WorkerGlobalScope, value: string): string;
+    plain(this: EventTarget<EventMap>, param0: string): string;
+    static detachable(param0: string): string;
 }
 type WorkerGlobalScopeEventMap = {
     fetch: Event;
@@ -175,12 +226,21 @@ declare abstract class WorkerGlobalScope extends EventTarget<WorkerGlobalScopeEv
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/ServiceWorkerGlobalScope)
  */
 interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
-    things(param0: boolean): IterableIterator<string>;
+    things(this: ServiceWorkerGlobalScope | typeof globalThis | null | void, param0: boolean): IterableIterator<string>;
     get prop(): Promise<number>;
 }
-declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(type: Type, handler: (event: WorkerGlobalScopeEventMap[Type]) => void): void;
-declare function things(param0: boolean): IterableIterator<string>;
+declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: WorkerGlobalScopeEventMap[Type]) => void): void;
+declare function addEventListener(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: string, handler: (event: Event) => void): void;
+declare function receiverFree(this: void, value: string): string;
+declare function customReceiver(this: EventTarget<WorkerGlobalScopeEventMap> | WorkerGlobalScope, value: string): string;
+declare function plain(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, param0: string): string;
+declare function things(this: ServiceWorkerGlobalScope | typeof globalThis | null | void, param0: boolean): IterableIterator<string>;
 declare const prop: Promise<number>;
+declare class ReplacementTarget {
+    convert(this: ReplacementTarget, value: string): string;
+    convert(this: ReplacementTarget, value: number): number;
+    explicit(this: void, value: string): string;
+}
 `
   );
 });
