@@ -99,63 +99,72 @@ jobs:
           );
           CAPNP
           cat > /tmp/unit-10-receiver-probe/inherited-global-receiver.js <<'JS'
-          function expectSuccess(label, callback) {
+          function classify(label, callback) {
             try {
               callback();
+              return "success";
             } catch (error) {
-              throw new Error(`${label} unexpectedly failed: ${error?.stack ?? error}`);
+              if (error instanceof TypeError && String(error).includes("Illegal invocation")) {
+                return "illegal-invocation";
+              }
+              throw new Error(`${label} produced an unexpected failure: ${error?.stack ?? error}`);
             }
           }
 
-          function expectIllegalInvocation(label, callback) {
-            let error;
-            try {
-              callback();
-            } catch (caught) {
-              error = caught;
+          function expectOutcome(matrix, label, expected) {
+            const actual = matrix[label];
+            if (actual !== expected) {
+              throw new Error(`${label} expected ${expected}, got ${actual}`);
             }
-            if (!(error instanceof TypeError) || !String(error).includes("Illegal invocation")) {
-              throw new Error(`${label} expected Illegal invocation, got: ${error?.stack ?? error}`);
-            }
-          }
-
-          function cleanGlobal(type, handler) {
-            self.removeEventListener(type, handler);
           }
 
           export const inheritedGlobalReceivers = {
             test() {
-              const type = "unit-10-inherited-receiver";
-              const handler = () => {};
-              const fromSelf = self.addEventListener;
-
-              expectSuccess("self-derived bare call", () => fromSelf(type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("self-derived undefined receiver", () => fromSelf.call(undefined, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("self-derived null receiver", () => fromSelf.call(null, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("self-derived globalThis receiver", () => fromSelf.call(globalThis, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("self-derived self receiver", () => fromSelf.call(self, type, handler));
-              cleanGlobal(type, handler);
-              expectIllegalInvocation("self-derived unrelated receiver", () => fromSelf.call({}, type, handler));
-
+              const matrix = {};
               const target = new EventTarget();
+              const fromSelf = self.addEventListener;
               const fromTarget = target.addEventListener;
-              expectSuccess("EventTarget-derived bare call", () => fromTarget(type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("EventTarget-derived undefined receiver", () => fromTarget.call(undefined, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("EventTarget-derived null receiver", () => fromTarget.call(null, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("EventTarget-derived globalThis receiver", () => fromTarget.call(globalThis, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("EventTarget-derived self receiver", () => fromTarget.call(self, type, handler));
-              cleanGlobal(type, handler);
-              expectSuccess("EventTarget-derived owning receiver", () => fromTarget.call(target, type, handler));
-              target.removeEventListener(type, handler);
-              expectIllegalInvocation("EventTarget-derived unrelated receiver", () => fromTarget.call({}, type, handler));
+
+              function probe(label, invoke) {
+                const type = `unit-10-${label}`;
+                const handler = () => {};
+                matrix[label] = classify(label, () => invoke(type, handler));
+                self.removeEventListener(type, handler);
+                target.removeEventListener(type, handler);
+              }
+
+              probe("self.bare", (type, handler) => fromSelf(type, handler));
+              probe("self.undefined", (type, handler) => fromSelf.call(undefined, type, handler));
+              probe("self.null", (type, handler) => fromSelf.call(null, type, handler));
+              probe("self.globalThis", (type, handler) => fromSelf.call(globalThis, type, handler));
+              probe("self.self", (type, handler) => fromSelf.call(self, type, handler));
+              probe("self.unrelated", (type, handler) => fromSelf.call({}, type, handler));
+
+              probe("target.bare", (type, handler) => fromTarget(type, handler));
+              probe("target.undefined", (type, handler) => fromTarget.call(undefined, type, handler));
+              probe("target.null", (type, handler) => fromTarget.call(null, type, handler));
+              probe("target.globalThis", (type, handler) => fromTarget.call(globalThis, type, handler));
+              probe("target.self", (type, handler) => fromTarget.call(self, type, handler));
+              probe("target.owner", (type, handler) => fromTarget.call(target, type, handler));
+              probe("target.unrelated", (type, handler) => fromTarget.call({}, type, handler));
+
+              console.log(`UNIT10_RECEIVER_MATRIX=${JSON.stringify(matrix)}`);
+
+              // These outcomes were reached before the original probe's first
+              // false expectation and therefore remain exact regression anchors.
+              expectOutcome(matrix, "self.bare", "success");
+              expectOutcome(matrix, "self.undefined", "success");
+              expectOutcome(matrix, "self.null", "success");
+              expectOutcome(matrix, "self.globalThis", "success");
+              expectOutcome(matrix, "self.self", "success");
+              expectOutcome(matrix, "self.unrelated", "illegal-invocation");
+
+              // The failed first generation established that a function value
+              // taken from a separate EventTarget does not acquire global-owner
+              // fallback merely because it is later called bare.
+              expectOutcome(matrix, "target.bare", "illegal-invocation");
+              expectOutcome(matrix, "target.owner", "success");
+              expectOutcome(matrix, "target.unrelated", "illegal-invocation");
             },
           };
           JS
