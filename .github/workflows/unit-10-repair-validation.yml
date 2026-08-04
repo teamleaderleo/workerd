@@ -1,0 +1,71 @@
+# Fork-only execution carrier for Fieldwork upstream unit 10.
+# Keep this file out of the canonical source branch and public contribution.
+name: Unit 10 fixture repair validation
+
+on:
+  push:
+    branches:
+      - unit-10/repair-validation-a1628283
+  pull_request:
+    branches:
+      - unit-10/receiver-aware-types
+    paths:
+      - .github/workflows/unit-10-repair-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: a1628283d6160c1b8ebbfcc34b50cd5e73945977
+
+jobs:
+  exact-head-types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out validation carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact product head
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-repair-validation.yml'
+          test "$(git diff --name-only "${CANDIDATE_SHA}" HEAD)" = ".github/workflows/unit-10-repair-validation.yml"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Run repaired generator fixtures
+        run: |
+          bazelisk test \
+            //types:test/generator/structure.spec \
+            //types:test/generator/index.spec \
+            --test_output=errors
+
+      - name: Run focused receiver targets
+        run: |
+          bazelisk test \
+            //types:test/index.spec \
+            //types:test/transforms/overrides/index.spec \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
+            //types:test/transforms/globals.spec \
+            //types:test/types/fetch-receiver \
+            --test_output=errors
+
+      - name: Run complete types package
+        run: bazelisk test //types/... --test_output=errors
+
+      - name: Run types lint
+        run: bazelisk test //types:types_lib@eslint --test_output=errors
+
+      - name: Build generated declarations
+        run: bazelisk build //types
+
+      - name: Check generated marker leakage
+        run: |
+          ! grep -R '__JSG_GENERATED_RECEIVER__' bazel-bin/types/definitions
