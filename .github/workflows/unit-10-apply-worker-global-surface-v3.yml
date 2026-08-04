@@ -28,13 +28,16 @@ jobs:
     timeout-minutes: 240
     steps:
       - name: Check out repair carrier
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Verify carrier fence and remove machinery
+        shell: bash
         run: |
+          set -euo pipefail
           mapfile -t changed < <(git diff --name-only "${CANDIDATE_SHA}" HEAD)
           test "${#changed[@]}" -eq 2
           test "${changed[0]}" = ".fieldwork/unit-10-apply.py"
@@ -42,6 +45,7 @@ jobs:
           cp .fieldwork/unit-10-apply.py /tmp/unit-10-apply.py
           git reset --hard "${CANDIDATE_SHA}"
           test -z "$(git status --porcelain)"
+          mkdir -p receipt
 
       - name: Set up repository toolchain
         uses: ./.github/actions/setup-runner
@@ -49,7 +53,9 @@ jobs:
           GOOGLESOURCE_COOKIE: ''
 
       - name: Apply guarded source and test repair
+        shell: bash
         run: |
+          set -euo pipefail
           python3 /tmp/unit-10-apply.py
           ./node_modules/.bin/prettier --write \
             types/src/transforms/globals.ts \
@@ -60,20 +66,35 @@ jobs:
             types/src/transforms/globals.ts \
             types/test/transforms/globals.spec.ts \
             types/test/types/inherited-global-receiver.ts | sort)"
+          git diff --binary > receipt/worker-global-surface-repair.patch
+          {
+            echo "candidate_sha=$CANDIDATE_SHA"
+            echo "carrier_head=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "target_branch=$TARGET_BRANCH"
+          } > receipt/identity.txt
 
       - name: Run focused repair tests
+        shell: bash
         run: |
+          set -euo pipefail
           bazelisk test \
             //types:test/transforms/globals.spec \
             //types:test/index.spec \
             //types:test/types/inherited-global-receiver \
-            --test_output=errors
+            --test_output=errors \
+            2>&1 | tee receipt/focused.log
 
       - name: Run types lint
-        run: bazelisk test //types:types_lib@eslint --test_output=errors
-
-      - name: Commit clean repair branch
+        shell: bash
         run: |
+          set -euo pipefail
+          bazelisk test //types:types_lib@eslint --test_output=errors \
+            2>&1 | tee receipt/lint.log
+
+      - name: Commit and publish exact clean repair
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
@@ -84,4 +105,16 @@ jobs:
           git commit \
             -m "types: model inherited Worker global receivers" \
             -m "Generated with AI assistance."
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          echo "source_head=$(git rev-parse HEAD)" >> receipt/identity.txt
+          git push \
+            --force-with-lease="refs/heads/${TARGET_BRANCH}:${CANDIDATE_SHA}" \
+            origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Upload exact receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-unit-10-worker-global-surface
+          path: receipt/
+          if-no-files-found: warn
+          retention-days: 30
