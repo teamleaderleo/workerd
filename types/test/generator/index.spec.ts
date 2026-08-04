@@ -166,10 +166,10 @@ declare abstract class Nested {
 }
 declare class Root2 extends Thing19 {
     constructor(param0: Thing14);
-    method(param0: Thing12): Thing13;
+    method(this: __JSG_GENERATED_RECEIVER__<Root2>, param0: Thing12): Thing13;
     Nested: typeof Nested;
-    [Symbol.iterator](param0: Thing15): Thing16;
-    [Symbol.asyncIterator](param0: Thing17): Thing18;
+    [Symbol.iterator](this: __JSG_GENERATED_RECEIVER__<Root2>, param0: Thing15): Thing16;
+    [Symbol.asyncIterator](this: __JSG_GENERATED_RECEIVER__<Root2>, param0: Thing17): Thing18;
 }
 `
   );
