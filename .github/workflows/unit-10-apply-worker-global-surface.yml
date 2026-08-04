@@ -1,0 +1,388 @@
+# Fork-only source-repair carrier for Fieldwork upstream unit 10.
+# The workflow resets to the exact candidate before committing, so this file is
+# never included in the clean repair branch.
+name: Unit 10 apply Worker global surface repair
+
+on:
+  push:
+    branches:
+      - unit-10/apply-worker-global-surface-repair
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CANDIDATE_SHA: a1628283d6160c1b8ebbfcc34b50cd5e73945977
+  TARGET_BRANCH: unit-10/worker-global-surface-repair
+
+jobs:
+  apply-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out repair carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify carrier fence
+        run: |
+          git diff --exit-code "${CANDIDATE_SHA}" HEAD -- . ':(exclude).github/workflows/unit-10-apply-worker-global-surface.yml'
+          test "$(git diff --name-only "${CANDIDATE_SHA}" HEAD)" = ".github/workflows/unit-10-apply-worker-global-surface.yml"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Apply guarded source and test repair
+        run: |
+          git reset --hard "${CANDIDATE_SHA}"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          globals_path = Path('types/src/transforms/globals.ts')
+          source = globals_path.read_text()
+
+          anchor = '''function hasStaticModifier(node: ts.Node): boolean {
+          '''
+          assert source.count(anchor) == 1
+          helpers = '''function createInheritedContextGlobalMethod(
+            ctx: ts.TransformationContext,
+            member: ts.ClassElement | ts.TypeElement,
+            asClass: boolean
+          ): ts.MethodSignature | ts.MethodDeclaration | undefined {
+            if (
+              (!ts.isMethodSignature(member) && !ts.isMethodDeclaration(member)) ||
+              !ts.isIdentifier(member.name) ||
+              hasStaticModifier(member) ||
+              getGeneratedReceiverOwner(member.parameters[0]) === undefined
+            ) {
+              return undefined;
+            }
+
+            const widened = withContextGlobalReceiver(ctx, member);
+            assert(
+              ts.isMethodSignature(widened) || ts.isMethodDeclaration(widened)
+            );
+
+            let inherited: ts.MethodSignature | ts.MethodDeclaration;
+            if (asClass) {
+              inherited = ctx.factory.createMethodDeclaration(
+                ts.isMethodDeclaration(widened) ? widened.modifiers : undefined,
+                ts.isMethodDeclaration(widened)
+                  ? widened.asteriskToken
+                  : undefined,
+                widened.name,
+                widened.questionToken,
+                widened.typeParameters,
+                widened.parameters,
+                widened.type,
+                /* body */ undefined
+              );
+            } else {
+              inherited = ctx.factory.createMethodSignature(
+                /* modifiers */ undefined,
+                widened.name,
+                widened.questionToken,
+                widened.typeParameters,
+                widened.parameters,
+                widened.type
+              );
+            }
+
+            // Preserve source JSDoc without copying trailing test-only comments.
+            return ts.setOriginalNode(inherited, member);
+          }
+
+          function appendInheritedContextGlobalMethods(
+            ctx: ts.TransformationContext,
+            node: ts.InterfaceDeclaration | ts.ClassDeclaration,
+            methods: readonly (ts.MethodSignature | ts.MethodDeclaration)[]
+          ): ts.InterfaceDeclaration | ts.ClassDeclaration {
+            if (methods.length === 0) return node;
+
+            if (ts.isInterfaceDeclaration(node)) {
+              assert(methods.every(ts.isMethodSignature));
+              return ctx.factory.updateInterfaceDeclaration(
+                node,
+                node.modifiers,
+                node.name,
+                node.typeParameters,
+                node.heritageClauses,
+                ctx.factory.createNodeArray([
+                  ...node.members,
+                  ...(methods as ts.MethodSignature[]),
+                ])
+              );
+            }
+
+            assert(methods.every(ts.isMethodDeclaration));
+            return ctx.factory.updateClassDeclaration(
+              node,
+              node.modifiers,
+              node.name,
+              node.typeParameters,
+              node.heritageClauses,
+              ctx.factory.createNodeArray([
+                ...node.members,
+                ...(methods as ts.MethodDeclaration[]),
+              ])
+            );
+          }
+
+          '''
+          source = source.replace(anchor, helpers + anchor)
+
+          visitor_anchor = '''  // Called with each class/interface that should have its methods/properties
+          // extracted into global functions/consts. Recursively visits superclasses.
+          function extractGlobalNodes(
+          '''
+          assert source.count(visitor_anchor) == 1
+          collector = '''  // Builds a Worker-global-local method surface for generated methods inherited
+            // from shared ancestors. Shared declarations such as EventTarget remain
+            // owner-strict; only the ServiceWorkerGlobalScope view receives the
+            // nullish/global fallback accepted by workerd.
+            function collectInheritedContextGlobalMethods(
+              node: ts.InterfaceDeclaration | ts.ClassDeclaration
+            ): (ts.MethodSignature | ts.MethodDeclaration)[] {
+              const asClass = ts.isClassDeclaration(node);
+              const methods: (ts.MethodSignature | ts.MethodDeclaration)[] = [];
+              const seenNames = new Set<string>();
+
+              for (const member of node.members) {
+                if (
+                  (ts.isMethodSignature(member) ||
+                    ts.isMethodDeclaration(member)) &&
+                  ts.isIdentifier(member.name)
+                ) {
+                  seenNames.add(member.name.text);
+                }
+              }
+
+              function collectFromDeclaration(
+                declaration: NamedDeclaration,
+                typeArgs?: ts.NodeArray<ts.TypeNode>
+              ): void {
+                const typeArgInlines = new Map<string, ts.TypeNode>();
+                if (declaration.typeParameters) {
+                  assert(
+                    declaration.typeParameters.length === typeArgs?.length,
+                    `Expected ${declaration.typeParameters.length} type argument(s), got ${typeArgs?.length}`
+                  );
+                  declaration.typeParameters.forEach((typeParam, index) => {
+                    typeArgInlines.set(typeParam.name.text, typeArgs[index]);
+                  });
+                }
+                const inlineVisitor = createInlineVisitor(ctx, typeArgInlines);
+
+                // A declaration's own methods hide methods with the same name on
+                // more distant ancestors. Preserve all overloads from the nearest
+                // declaration, then continue through the remaining heritage.
+                const namesAtLevel = new Set<string>();
+                for (const member of declaration.members) {
+                  if (
+                    (!ts.isMethodSignature(member) &&
+                      !ts.isMethodDeclaration(member)) ||
+                    !ts.isIdentifier(member.name)
+                  ) {
+                    continue;
+                  }
+
+                  const name = member.name.text;
+                  if (!seenNames.has(name)) {
+                    const inherited = createInheritedContextGlobalMethod(
+                      ctx,
+                      member,
+                      asClass
+                    );
+                    if (inherited !== undefined) {
+                      const inlined = ts.visitNode(inherited, inlineVisitor);
+                      assert(
+                        inlined !== undefined &&
+                          (ts.isMethodSignature(inlined) ||
+                            ts.isMethodDeclaration(inlined))
+                      );
+                      methods.push(inlined);
+                    }
+                  }
+                  namesAtLevel.add(name);
+                }
+                for (const name of namesAtLevel) seenNames.add(name);
+
+                if (declaration.heritageClauses === undefined) return;
+                for (const originalClause of declaration.heritageClauses) {
+                  const transformedClause = ts.visitNode(
+                    originalClause,
+                    inlineVisitor,
+                    ts.isHeritageClause
+                  );
+                  assert.strictEqual(
+                    transformedClause.types.length,
+                    originalClause.types.length
+                  );
+                  transformedClause.types.forEach((superType, index) => {
+                    const superTypeDeclaration = getHeritageDeclaration(
+                      checker,
+                      declarations,
+                      originalClause.types[index],
+                      superType
+                    );
+                    collectFromDeclaration(
+                      superTypeDeclaration,
+                      superType.typeArguments
+                    );
+                  });
+                }
+              }
+
+              if (node.heritageClauses !== undefined) {
+                for (const clause of node.heritageClauses) {
+                  for (const superType of clause.types) {
+                    const superTypeDeclaration = getHeritageDeclaration(
+                      checker,
+                      declarations,
+                      superType,
+                      superType
+                    );
+                    collectFromDeclaration(
+                      superTypeDeclaration,
+                      superType.typeArguments
+                    );
+                  }
+                }
+              }
+
+              return methods;
+            }
+
+          '''
+          source = source.replace(visitor_anchor, collector + visitor_anchor)
+
+          old_return = '''      const globalScope = widenContextGlobalScopeDeclaration(ctx, node);
+                return [globalScope, ...extractGlobalNodes(globalScope)];
+          '''
+          new_return = '''      const globalScope = widenContextGlobalScopeDeclaration(ctx, node);
+                const globalSurface = appendInheritedContextGlobalMethods(
+                  ctx,
+                  globalScope,
+                  collectInheritedContextGlobalMethods(globalScope)
+                );
+                // Extract from the declaration before local inherited shadows are
+                // appended, otherwise the ambient free functions would be emitted
+                // twice.
+                return [globalSurface, ...extractGlobalNodes(globalScope)];
+          '''
+          assert source.count(old_return) == 1
+          source = source.replace(old_return, new_return)
+          globals_path.write_text(source)
+
+          spec_path = Path('types/test/transforms/globals.spec.ts')
+          spec = spec_path.read_text()
+          old_clean = '''  const cleanedSource = source
+              .replaceAll(
+                'this: __JSG_GENERATED_RECEIVER__<EventTarget<EventMap>>',
+                'this: EventTarget<EventMap>'
+              )
+              .replace(
+                'this: __JSG_GENERATED_RECEIVER__<ServiceWorkerGlobalScope>',
+                'this: ServiceWorkerGlobalScope | typeof globalThis | null | void'
+              );
+          '''
+          new_clean = '''  const cleanedSource = source
+              .replaceAll(
+                'this: __JSG_GENERATED_RECEIVER__<EventTarget<EventMap>>',
+                'this: EventTarget<EventMap>'
+              )
+              .replace(
+                'this: __JSG_GENERATED_RECEIVER__<ServiceWorkerGlobalScope>',
+                'this: ServiceWorkerGlobalScope | typeof globalThis | null | void'
+              )
+              .replace(
+                '    get console(): Console; // GetAccessorDeclaration\\n}',
+                `    get console(): Console; // GetAccessorDeclaration
+              addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: WorkerGlobalScopeEventMap[Type]) => void): void;
+              dispatchEvent(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, event: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap]): void;
+          }`
+              );
+          '''
+          assert spec.count(old_clean) == 1
+          spec = spec.replace(old_clean, new_clean)
+          spec_path.write_text(spec)
+
+          fixture = Path('types/test/types/inherited-global-receiver.ts')
+          assert not fixture.exists()
+          fixture.write_text('''declare const workerEvent: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap];
+
+          const fromSelfDispatch = self.dispatchEvent;
+          fromSelfDispatch(workerEvent);
+          fromSelfDispatch.call(undefined, workerEvent);
+          fromSelfDispatch.call(null, workerEvent);
+          fromSelfDispatch.call(globalThis, workerEvent);
+          fromSelfDispatch.call(self, workerEvent);
+          // @ts-expect-error Unrelated objects are not legal Worker receivers.
+          fromSelfDispatch.call({}, workerEvent);
+
+          const target = new EventTarget();
+          const fromTargetDispatch = target.dispatchEvent;
+          // @ts-expect-error A method detached from an ordinary EventTarget remains strict.
+          fromTargetDispatch(workerEvent);
+          fromTargetDispatch.call(target, workerEvent);
+          // ServiceWorkerGlobalScope is structurally an EventTarget and remains a
+          // legal explicit owner for the shared EventTarget callback.
+          fromTargetDispatch.call(self, workerEvent);
+          // @ts-expect-error The consumer host global is not an ordinary EventTarget owner.
+          fromTargetDispatch.call(globalThis, workerEvent);
+          // @ts-expect-error Unrelated objects remain illegal.
+          fromTargetDispatch.call({}, workerEvent);
+
+          const fromSelfAddEventListener = self.addEventListener;
+          fromSelfAddEventListener("fetch", (event) => {
+            event.respondWith(new Response());
+          });
+          fromSelfAddEventListener.call(undefined, "fetch", () => {});
+          fromSelfAddEventListener.call(null, "fetch", () => {});
+          fromSelfAddEventListener.call(globalThis, "fetch", () => {});
+          fromSelfAddEventListener.call(self, "fetch", () => {});
+          // @ts-expect-error Unrelated objects are not legal Worker receivers.
+          fromSelfAddEventListener.call({}, "fetch", () => {});
+          // @ts-expect-error Keyed event inference must remain specific to FetchEvent.
+          fromSelfAddEventListener("fetch", (event: ScheduledEvent) => {});
+
+          const fromTargetAddEventListener = target.addEventListener;
+          // @ts-expect-error A method detached from an ordinary EventTarget remains strict.
+          fromTargetAddEventListener("fetch", () => {});
+          fromTargetAddEventListener.call(target, "fetch", () => {});
+          ''')
+          PY
+
+          ./node_modules/.bin/prettier --write \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts
+          git diff --check
+
+      - name: Run focused repair tests
+        run: |
+          bazelisk test \
+            //types:test/transforms/globals.spec \
+            //types:test/index.spec \
+            //types:test/types/inherited-global-receiver \
+            --test_output=errors
+
+      - name: Run types lint
+        run: bazelisk test //types:types_lib@eslint --test_output=errors
+
+      - name: Commit clean repair branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts
+          git diff --cached --check
+          git commit -m "types: model inherited Worker global receivers" -m "Generated with AI assistance."
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
