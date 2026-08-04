@@ -1,0 +1,324 @@
+from pathlib import Path
+from textwrap import dedent, indent
+
+
+def replace_once(text: str, old: str, new: str) -> str:
+    count = text.count(old)
+    assert count == 1, (old[:120], count)
+    return text.replace(old, new, 1)
+
+
+globals_path = Path("types/src/transforms/globals.ts")
+source = globals_path.read_text()
+
+helpers = dedent(
+    """\
+    function createInheritedContextGlobalMethod(
+      ctx: ts.TransformationContext,
+      member: ts.ClassElement | ts.TypeElement,
+      asClass: boolean
+    ): ts.MethodSignature | ts.MethodDeclaration | undefined {
+      if (
+        (!ts.isMethodSignature(member) && !ts.isMethodDeclaration(member)) ||
+        !ts.isIdentifier(member.name) ||
+        hasStaticModifier(member) ||
+        getGeneratedReceiverOwner(member.parameters[0]) === undefined
+      ) {
+        return undefined;
+      }
+
+      const widened = withContextGlobalReceiver(ctx, member);
+      assert(ts.isMethodSignature(widened) || ts.isMethodDeclaration(widened));
+
+      let inherited: ts.MethodSignature | ts.MethodDeclaration;
+      if (asClass) {
+        inherited = ctx.factory.createMethodDeclaration(
+          ts.isMethodDeclaration(widened) ? widened.modifiers : undefined,
+          ts.isMethodDeclaration(widened) ? widened.asteriskToken : undefined,
+          widened.name,
+          widened.questionToken,
+          widened.typeParameters,
+          widened.parameters,
+          widened.type,
+          /* body */ undefined
+        );
+      } else {
+        inherited = ctx.factory.createMethodSignature(
+          /* modifiers */ undefined,
+          widened.name,
+          widened.questionToken,
+          widened.typeParameters,
+          widened.parameters,
+          widened.type
+        );
+      }
+
+      // Preserve source JSDoc without copying trailing test-only comments.
+      return ts.setOriginalNode(inherited, member);
+    }
+
+    function appendInheritedContextGlobalMethods(
+      ctx: ts.TransformationContext,
+      node: ts.InterfaceDeclaration | ts.ClassDeclaration,
+      methods: readonly (ts.MethodSignature | ts.MethodDeclaration)[]
+    ): ts.InterfaceDeclaration | ts.ClassDeclaration {
+      if (methods.length === 0) return node;
+
+      if (ts.isInterfaceDeclaration(node)) {
+        assert(methods.every(ts.isMethodSignature));
+        return ctx.factory.updateInterfaceDeclaration(
+          node,
+          node.modifiers,
+          node.name,
+          node.typeParameters,
+          node.heritageClauses,
+          ctx.factory.createNodeArray([
+            ...node.members,
+            ...(methods as ts.MethodSignature[]),
+          ])
+        );
+      }
+
+      assert(methods.every(ts.isMethodDeclaration));
+      return ctx.factory.updateClassDeclaration(
+        node,
+        node.modifiers,
+        node.name,
+        node.typeParameters,
+        node.heritageClauses,
+        ctx.factory.createNodeArray([
+          ...node.members,
+          ...(methods as ts.MethodDeclaration[]),
+        ])
+      );
+    }
+
+    """
+)
+source = replace_once(
+    source,
+    "function hasStaticModifier(node: ts.Node): boolean {\n",
+    helpers + "function hasStaticModifier(node: ts.Node): boolean {\n",
+)
+
+collector = indent(
+    dedent(
+        """\
+        // Builds a Worker-global-local method surface for generated methods inherited
+        // from shared ancestors. Shared declarations such as EventTarget remain
+        // owner-strict; only the ServiceWorkerGlobalScope view receives the
+        // nullish/global fallback accepted by workerd.
+        function collectInheritedContextGlobalMethods(
+          node: ts.InterfaceDeclaration | ts.ClassDeclaration
+        ): (ts.MethodSignature | ts.MethodDeclaration)[] {
+          const asClass = ts.isClassDeclaration(node);
+          const methods: (ts.MethodSignature | ts.MethodDeclaration)[] = [];
+          const seenNames = new Set<string>();
+
+          for (const member of node.members) {
+            if (
+              (ts.isMethodSignature(member) || ts.isMethodDeclaration(member)) &&
+              ts.isIdentifier(member.name)
+            ) {
+              seenNames.add(member.name.text);
+            }
+          }
+
+          function collectFromDeclaration(
+            declaration: NamedDeclaration,
+            typeArgs?: ts.NodeArray<ts.TypeNode>
+          ): void {
+            const typeArgInlines = new Map<string, ts.TypeNode>();
+            if (declaration.typeParameters) {
+              assert(
+                declaration.typeParameters.length === typeArgs?.length,
+                `Expected ${declaration.typeParameters.length} type argument(s), got ${typeArgs?.length}`
+              );
+              declaration.typeParameters.forEach((typeParam, index) => {
+                typeArgInlines.set(typeParam.name.text, typeArgs[index]);
+              });
+            }
+            const inlineVisitor = createInlineVisitor(ctx, typeArgInlines);
+
+            // A declaration's own methods hide methods with the same name on
+            // more distant ancestors. Preserve all overloads from the nearest
+            // declaration, then continue through the remaining heritage.
+            const namesAtLevel = new Set<string>();
+            for (const member of declaration.members) {
+              if (
+                (!ts.isMethodSignature(member) &&
+                  !ts.isMethodDeclaration(member)) ||
+                !ts.isIdentifier(member.name)
+              ) {
+                continue;
+              }
+
+              const name = member.name.text;
+              if (!seenNames.has(name)) {
+                const inherited = createInheritedContextGlobalMethod(
+                  ctx,
+                  member,
+                  asClass
+                );
+                if (inherited !== undefined) {
+                  const inlined = ts.visitNode(inherited, inlineVisitor);
+                  assert(
+                    inlined !== undefined &&
+                      (ts.isMethodSignature(inlined) ||
+                        ts.isMethodDeclaration(inlined))
+                  );
+                  methods.push(inlined);
+                }
+              }
+              namesAtLevel.add(name);
+            }
+            for (const name of namesAtLevel) seenNames.add(name);
+
+            if (declaration.heritageClauses === undefined) return;
+            for (const originalClause of declaration.heritageClauses) {
+              const transformedClause = ts.visitNode(
+                originalClause,
+                inlineVisitor,
+                ts.isHeritageClause
+              );
+              assert.strictEqual(
+                transformedClause.types.length,
+                originalClause.types.length
+              );
+              transformedClause.types.forEach((superType, index) => {
+                const superTypeDeclaration = getHeritageDeclaration(
+                  checker,
+                  declarations,
+                  originalClause.types[index],
+                  superType
+                );
+                collectFromDeclaration(
+                  superTypeDeclaration,
+                  superType.typeArguments
+                );
+              });
+            }
+          }
+
+          if (node.heritageClauses !== undefined) {
+            for (const clause of node.heritageClauses) {
+              for (const superType of clause.types) {
+                const superTypeDeclaration = getHeritageDeclaration(
+                  checker,
+                  declarations,
+                  superType,
+                  superType
+                );
+                collectFromDeclaration(
+                  superTypeDeclaration,
+                  superType.typeArguments
+                );
+              }
+            }
+          }
+
+          return methods;
+        }
+
+        """
+    ),
+    "  ",
+)
+visitor_anchor = (
+    "  // Called with each class/interface that should have its methods/properties\n"
+    "  // extracted into global functions/consts. Recursively visits superclasses.\n"
+    "  function extractGlobalNodes(\n"
+)
+source = replace_once(source, visitor_anchor, collector + visitor_anchor)
+
+old_return = (
+    "      const globalScope = widenContextGlobalScopeDeclaration(ctx, node);\n"
+    "      return [globalScope, ...extractGlobalNodes(globalScope)];\n"
+)
+new_return = (
+    "      const globalScope = widenContextGlobalScopeDeclaration(ctx, node);\n"
+    "      const globalSurface = appendInheritedContextGlobalMethods(\n"
+    "        ctx,\n"
+    "        globalScope,\n"
+    "        collectInheritedContextGlobalMethods(globalScope)\n"
+    "      );\n"
+    "      // Extract before local inherited shadows are appended, otherwise\n"
+    "      // the ambient free functions would be emitted twice.\n"
+    "      return [globalSurface, ...extractGlobalNodes(globalScope)];\n"
+)
+source = replace_once(source, old_return, new_return)
+globals_path.write_text(source)
+
+spec_path = Path("types/test/transforms/globals.spec.ts")
+spec = spec_path.read_text()
+old_clean_tail = (
+    "      .replace(\n"
+    "        'this: __JSG_GENERATED_RECEIVER__<ServiceWorkerGlobalScope>',\n"
+    "        'this: ServiceWorkerGlobalScope | typeof globalThis | null | void'\n"
+    "      );\n"
+)
+new_clean_tail = (
+    "      .replace(\n"
+    "        'this: __JSG_GENERATED_RECEIVER__<ServiceWorkerGlobalScope>',\n"
+    "        'this: ServiceWorkerGlobalScope | typeof globalThis | null | void'\n"
+    "      )\n"
+    "      .replace(\n"
+    "        '    get console(): Console; // GetAccessorDeclaration\\n}',\n"
+    "        `    get console(): Console; // GetAccessorDeclaration\n"
+    "    addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, type: Type, handler: (event: WorkerGlobalScopeEventMap[Type]) => void): void;\n"
+    "    dispatchEvent(this: EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void, event: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap]): void;\n"
+    "}`\n"
+    "      );\n"
+)
+spec = replace_once(spec, old_clean_tail, new_clean_tail)
+spec_path.write_text(spec)
+
+fixture_path = Path("types/test/types/inherited-global-receiver.ts")
+assert not fixture_path.exists()
+fixture_path.write_text(
+    dedent(
+        """\
+        declare const workerEvent: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap];
+
+        const fromSelfDispatch = self.dispatchEvent;
+        fromSelfDispatch(workerEvent);
+        fromSelfDispatch.call(undefined, workerEvent);
+        fromSelfDispatch.call(null, workerEvent);
+        fromSelfDispatch.call(globalThis, workerEvent);
+        fromSelfDispatch.call(self, workerEvent);
+        // @ts-expect-error Unrelated objects are not legal Worker receivers.
+        fromSelfDispatch.call({}, workerEvent);
+
+        const target = new EventTarget();
+        const fromTargetDispatch = target.dispatchEvent;
+        // @ts-expect-error A method detached from an ordinary EventTarget remains strict.
+        fromTargetDispatch(workerEvent);
+        fromTargetDispatch.call(target, workerEvent);
+        // ServiceWorkerGlobalScope is structurally an EventTarget and remains a
+        // legal explicit owner for the shared EventTarget callback.
+        fromTargetDispatch.call(self, workerEvent);
+        // @ts-expect-error The consumer host global is not an ordinary EventTarget owner.
+        fromTargetDispatch.call(globalThis, workerEvent);
+        // @ts-expect-error Unrelated objects remain illegal.
+        fromTargetDispatch.call({}, workerEvent);
+
+        const fromSelfAddEventListener = self.addEventListener;
+        fromSelfAddEventListener("fetch", (event) => {
+          event.respondWith(new Response());
+        });
+        fromSelfAddEventListener.call(undefined, "fetch", () => {});
+        fromSelfAddEventListener.call(null, "fetch", () => {});
+        fromSelfAddEventListener.call(globalThis, "fetch", () => {});
+        fromSelfAddEventListener.call(self, "fetch", () => {});
+        // @ts-expect-error Unrelated objects are not legal Worker receivers.
+        fromSelfAddEventListener.call({}, "fetch", () => {});
+        // @ts-expect-error Keyed event inference must remain specific to FetchEvent.
+        fromSelfAddEventListener("fetch", (event: ScheduledEvent) => {});
+
+        const fromTargetAddEventListener = target.addEventListener;
+        // @ts-expect-error A method detached from an ordinary EventTarget remains strict.
+        fromTargetAddEventListener("fetch", () => {});
+        fromTargetAddEventListener.call(target, "fetch", () => {});
+        """
+    )
+)
