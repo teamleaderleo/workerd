@@ -45,8 +45,8 @@ test('createStructureNode: method members', () => {
   assert.strictEqual(
     printNode(createStructureNode(structure, { asClass: false })),
     `interface Methods {
-    one(param0: boolean, param1: Promise<any>, param2?: number): void;
-    three(...param0: any[]): boolean;
+    one(this: __JSG_GENERATED_RECEIVER__<Methods>, param0: boolean, param1: Promise<any>, param2?: number): void;
+    three(this: __JSG_GENERATED_RECEIVER__<Methods>, ...param0: any[]): boolean;
 }`
   );
 
@@ -54,7 +54,7 @@ test('createStructureNode: method members', () => {
   assert.strictEqual(
     printNode(createStructureNode(structure, { asClass: true })),
     `declare abstract class Methods {
-    one(param0: boolean, param1: Promise<any>, param2?: number): void;
+    one(this: __JSG_GENERATED_RECEIVER__<Methods>, param0: boolean, param1: Promise<any>, param2?: number): void;
     static three(...param0: any[]): boolean;
 }`
   );
@@ -233,15 +233,15 @@ test('createStructureNode: iterator members', () => {
   assert.strictEqual(
     printNode(createStructureNode(structure, { asClass: false })),
     `interface Iterators {
-    [Symbol.iterator](param0?: ThingOptions): ThingIterator;
-    [Symbol.asyncIterator](param0?: AsyncThingOptions): AsyncThingIterator;
+    [Symbol.iterator](this: __JSG_GENERATED_RECEIVER__<Iterators>, param0?: ThingOptions): ThingIterator;
+    [Symbol.asyncIterator](this: __JSG_GENERATED_RECEIVER__<Iterators>, param0?: AsyncThingOptions): AsyncThingIterator;
 }`
   );
   assert.strictEqual(
     printNode(createStructureNode(structure, { asClass: true })),
     `declare abstract class Iterators {
-    [Symbol.iterator](param0?: ThingOptions): ThingIterator;
-    [Symbol.asyncIterator](param0?: AsyncThingOptions): AsyncThingIterator;
+    [Symbol.iterator](this: __JSG_GENERATED_RECEIVER__<Iterators>, param0?: ThingOptions): ThingIterator;
+    [Symbol.asyncIterator](this: __JSG_GENERATED_RECEIVER__<Iterators>, param0?: AsyncThingOptions): AsyncThingIterator;
 }`
   );
 });
