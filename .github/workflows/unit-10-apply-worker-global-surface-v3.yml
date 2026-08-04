@@ -1,0 +1,87 @@
+# Fork-only source-repair carrier for Fieldwork upstream unit 10.
+# The job copies its patch script aside, resets to the exact candidate, and
+# pushes a commit containing source/test files only.
+name: Unit 10 apply Worker global surface repair v3
+
+on:
+  push:
+    branches:
+      - unit-10/apply-worker-global-surface-repair-v3
+  pull_request:
+    branches:
+      - unit-10/receiver-aware-types
+    paths:
+      - .fieldwork/unit-10-apply.py
+      - .github/workflows/unit-10-apply-worker-global-surface-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CANDIDATE_SHA: a1628283d6160c1b8ebbfcc34b50cd5e73945977
+  TARGET_BRANCH: unit-10/worker-global-surface-repair
+
+jobs:
+  apply-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out repair carrier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify carrier fence and remove machinery
+        run: |
+          mapfile -t changed < <(git diff --name-only "${CANDIDATE_SHA}" HEAD)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = ".fieldwork/unit-10-apply.py"
+          test "${changed[1]}" = ".github/workflows/unit-10-apply-worker-global-surface-v3.yml"
+          cp .fieldwork/unit-10-apply.py /tmp/unit-10-apply.py
+          git reset --hard "${CANDIDATE_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Apply guarded source and test repair
+        run: |
+          python3 /tmp/unit-10-apply.py
+          ./node_modules/.bin/prettier --write \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts
+          git diff --check
+          test "$(git diff --name-only | sort)" = "$(printf '%s\n' \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts | sort)"
+
+      - name: Run focused repair tests
+        run: |
+          bazelisk test \
+            //types:test/transforms/globals.spec \
+            //types:test/index.spec \
+            //types:test/types/inherited-global-receiver \
+            --test_output=errors
+
+      - name: Run types lint
+        run: bazelisk test //types:types_lib@eslint --test_output=errors
+
+      - name: Commit clean repair branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts
+          git diff --cached --check
+          git commit \
+            -m "types: model inherited Worker global receivers" \
+            -m "Generated with AI assistance."
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
