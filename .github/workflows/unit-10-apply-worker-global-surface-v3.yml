@@ -73,10 +73,11 @@ jobs:
         with:
           GOOGLESOURCE_COOKIE: ''
 
-      - name: Prepare exact standalone Prettier
+      - name: Prepare exact standalone Prettier and bind setup residue
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git diff --name-only)" = '.bazelrc'
           corepack enable
           pnpm --version
           test "$(pnpm dlx prettier@3.8.1 --version)" = '3.8.1'
@@ -91,16 +92,20 @@ jobs:
             types/test/transforms/globals.spec.ts \
             types/test/types/inherited-global-receiver.ts
           git diff --check
-          test "$(git diff --name-only | sort)" = "$(printf '%s\n' \
+          expected=$(printf '%s\n' \
             types/src/transforms/globals.ts \
             types/test/transforms/globals.spec.ts \
-            types/test/types/inherited-global-receiver.ts | sort)"
-          git diff --binary > receipt/worker-global-surface-repair.patch
+            types/test/types/inherited-global-receiver.ts | sort)
+          actual=$(git diff --name-only | grep -v '^\.bazelrc$' | sort)
+          test "$actual" = "$expected"
+          git diff --binary -- . ':(exclude).bazelrc' \
+            > receipt/worker-global-surface-repair.patch
           {
             echo "candidate_sha=$CANDIDATE_SHA"
             echo "carrier_head=${{ github.event.pull_request.head.sha || github.sha }}"
             echo "target_branch=$TARGET_BRANCH"
             echo "prettier=3.8.1"
+            echo "setup_residue=.bazelrc"
           } > receipt/identity.txt
 
       - name: Run focused repair tests
@@ -125,6 +130,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git checkout "$CANDIDATE_SHA" -- .bazelrc
+          git diff --check
+          expected=$(printf '%s\n' \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts | sort)
+          test "$(git diff --name-only | sort)" = "$expected"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
