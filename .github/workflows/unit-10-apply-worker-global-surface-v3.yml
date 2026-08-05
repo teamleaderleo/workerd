@@ -43,6 +43,27 @@ jobs:
           test "${changed[0]}" = ".fieldwork/unit-10-apply.py"
           test "${changed[1]}" = ".github/workflows/unit-10-apply-worker-global-surface-v3.yml"
           cp .fieldwork/unit-10-apply.py /tmp/unit-10-apply.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('/tmp/unit-10-apply.py')
+          lines = path.read_text().splitlines(keepends=True)
+          in_fixture_block = False
+          changed = 0
+          output = []
+          for line in lines:
+              if line.startswith('old_clean_tail = ('):
+                  in_fixture_block = True
+              if in_fixture_block and '"      ' in line:
+                  line = line.replace('"      ', '"    ', 1)
+                  changed += 1
+              output.append(line)
+              if line.startswith('spec = replace_once('):
+                  in_fixture_block = False
+          assert changed == 12, changed
+          path.write_text(''.join(output))
+          PY
+          python3 -m py_compile /tmp/unit-10-apply.py
           git reset --hard "${CANDIDATE_SHA}"
           test -z "$(git status --porcelain)"
           mkdir -p receipt
