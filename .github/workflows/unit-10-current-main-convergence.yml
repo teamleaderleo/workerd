@@ -20,7 +20,7 @@ env:
   CURRENT_MAIN: 31f10dc2b628b543f17bbe8b4578312f6eea43ad
   FOUNDATION_BASE: 813c31394b9909d8f557bba14324db275bc12720
   FOUNDATION_HEAD: a1628283d6160c1b8ebbfcc34b50cd5e73945977
-  REPAIR_CARRIER: 3384d246093eebd160b9784b6a6d6ccc9764e624
+  REPAIR_CARRIER: b8935969023e926adfb0189379df1d1eadbd4db2
   SOURCE_BRANCH: candidate/10-receiver-aware-types-current-main
 
 jobs:
@@ -84,13 +84,13 @@ jobs:
         with:
           GOOGLESOURCE_COOKIE: ''
 
-      - name: Install locked TypeScript dependencies
+      - name: Prepare exact standalone Prettier
         shell: bash
         run: |
           set -euo pipefail
           corepack enable
           pnpm --version
-          pnpm install --frozen-lockfile
+          test "$(pnpm dlx prettier@3.8.1 --version)" = '3.8.1'
 
       - name: Apply receiver foundation and Worker-global repair
         shell: bash
@@ -115,7 +115,7 @@ jobs:
           git apply --check --3way "$receipt/foundation.patch"
           git apply --3way "$receipt/foundation.patch"
           python3 "$RUNNER_TEMP/unit-10-apply.py"
-          ./node_modules/.bin/prettier --write \
+          pnpm dlx prettier@3.8.1 --write \
             types/src/transforms/globals.ts \
             types/test/transforms/globals.spec.ts \
             types/test/types/inherited-global-receiver.ts
