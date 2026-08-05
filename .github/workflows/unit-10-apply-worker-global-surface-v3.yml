@@ -73,20 +73,20 @@ jobs:
         with:
           GOOGLESOURCE_COOKIE: ''
 
-      - name: Install locked TypeScript dependencies
+      - name: Prepare exact standalone Prettier
         shell: bash
         run: |
           set -euo pipefail
           corepack enable
           pnpm --version
-          pnpm install --frozen-lockfile
+          test "$(pnpm dlx prettier@3.8.1 --version)" = '3.8.1'
 
       - name: Apply guarded source and test repair
         shell: bash
         run: |
           set -euo pipefail
           python3 /tmp/unit-10-apply.py
-          ./node_modules/.bin/prettier --write \
+          pnpm dlx prettier@3.8.1 --write \
             types/src/transforms/globals.ts \
             types/test/transforms/globals.spec.ts \
             types/test/types/inherited-global-receiver.ts
@@ -100,6 +100,7 @@ jobs:
             echo "candidate_sha=$CANDIDATE_SHA"
             echo "carrier_head=${{ github.event.pull_request.head.sha || github.sha }}"
             echo "target_branch=$TARGET_BRANCH"
+            echo "prettier=3.8.1"
           } > receipt/identity.txt
 
       - name: Run focused repair tests
