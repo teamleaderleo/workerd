@@ -20,7 +20,7 @@ env:
   CURRENT_MAIN: 31f10dc2b628b543f17bbe8b4578312f6eea43ad
   FOUNDATION_BASE: 813c31394b9909d8f557bba14324db275bc12720
   FOUNDATION_HEAD: a1628283d6160c1b8ebbfcc34b50cd5e73945977
-  REPAIR_CARRIER: f842daf5f432798f11786af727bb41ad3efad65b
+  REPAIR_CARRIER: 3384d246093eebd160b9784b6a6d6ccc9764e624
   SOURCE_BRANCH: candidate/10-receiver-aware-types-current-main
 
 jobs:
@@ -83,6 +83,14 @@ jobs:
         uses: ./.github/actions/setup-runner
         with:
           GOOGLESOURCE_COOKIE: ''
+
+      - name: Install locked TypeScript dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm --version
+          pnpm install --frozen-lockfile
 
       - name: Apply receiver foundation and Worker-global repair
         shell: bash
