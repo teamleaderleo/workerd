@@ -20,7 +20,7 @@ env:
   CURRENT_MAIN: 31f10dc2b628b543f17bbe8b4578312f6eea43ad
   FOUNDATION_BASE: 813c31394b9909d8f557bba14324db275bc12720
   FOUNDATION_HEAD: a1628283d6160c1b8ebbfcc34b50cd5e73945977
-  REPAIR_CARRIER: eb23acc18df8b8bfe7cb2081a6bf00a61d1d72c1
+  REPAIR_CARRIER: f842daf5f432798f11786af727bb41ad3efad65b
   SOURCE_BRANCH: candidate/10-receiver-aware-types-current-main
 
 jobs:
@@ -54,6 +54,26 @@ jobs:
             "$RUNNER_TEMP/unit-10-current-runtime/"
           git show "$REPAIR_CARRIER:.fieldwork/unit-10-apply.py" \
             > "$RUNNER_TEMP/unit-10-apply.py"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('${{ runner.temp }}/unit-10-apply.py')
+          lines = path.read_text().splitlines(keepends=True)
+          in_fixture_block = False
+          changed = 0
+          output = []
+          for line in lines:
+              if line.startswith('old_clean_tail = ('):
+                  in_fixture_block = True
+              if in_fixture_block and '"      ' in line:
+                  line = line.replace('"      ', '"    ', 1)
+                  changed += 1
+              output.append(line)
+              if line.startswith('spec = replace_once('):
+                  in_fixture_block = False
+          assert changed == 12, changed
+          path.write_text(''.join(output))
+          PY
           python3 -m py_compile "$RUNNER_TEMP/unit-10-apply.py"
           git reset --hard "$CURRENT_MAIN"
           git clean -fdx
