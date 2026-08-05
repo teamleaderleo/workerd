@@ -1,0 +1,256 @@
+name: Unit 10 current-main receiver convergence
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/unit-10-current-main-base
+    paths:
+      - .fieldwork/unit-10-current-runtime-probe.js
+      - .fieldwork/unit-10-current-runtime-probe.wd-test
+      - .github/workflows/unit-10-current-main-convergence.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unit-10-current-main-convergence-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CURRENT_MAIN: 31f10dc2b628b543f17bbe8b4578312f6eea43ad
+  FOUNDATION_BASE: 813c31394b9909d8f557bba14324db275bc12720
+  FOUNDATION_HEAD: a1628283d6160c1b8ebbfcc34b50cd5e73945977
+  REPAIR_CARRIER: 82e8f428501765d3c7070c9d5ad45d95bd7fed6e
+  SOURCE_BRANCH: candidate/10-receiver-aware-types-current-main
+
+jobs:
+  converge-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out exact current-main carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify three-file carrier and preserve execution inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base HEAD "$CURRENT_MAIN")" = "$CURRENT_MAIN"
+          expected=$(printf '%s\n' \
+            .fieldwork/unit-10-current-runtime-probe.js \
+            .fieldwork/unit-10-current-runtime-probe.wd-test \
+            .github/workflows/unit-10-current-main-convergence.yml | sort)
+          actual=$(git diff --name-only "$CURRENT_MAIN..HEAD" | sort)
+          test "$actual" = "$expected"
+          git diff --check "$CURRENT_MAIN..HEAD"
+          mkdir -p "$RUNNER_TEMP/unit-10-current-main-receipt" \
+            "$RUNNER_TEMP/unit-10-current-runtime"
+          cp .fieldwork/unit-10-current-runtime-probe.js \
+            "$RUNNER_TEMP/unit-10-current-runtime/"
+          cp .fieldwork/unit-10-current-runtime-probe.wd-test \
+            "$RUNNER_TEMP/unit-10-current-runtime/"
+          git show "$REPAIR_CARRIER:.fieldwork/unit-10-apply.py" \
+            > "$RUNNER_TEMP/unit-10-apply.py"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('${{ runner.temp }}/unit-10-apply.py')
+          lines = path.read_text().splitlines(keepends=True)
+          in_fixture_block = False
+          changed = 0
+          output = []
+          for line in lines:
+              if line.startswith('old_clean_tail = ('):
+                  in_fixture_block = True
+              if in_fixture_block and '"      ' in line:
+                  line = line.replace('"      ', '"    ', 1)
+                  changed += 1
+              output.append(line)
+              if line.startswith('spec = replace_once('):
+                  in_fixture_block = False
+          assert changed == 12, changed
+          path.write_text(''.join(output))
+          PY
+          python3 -m py_compile "$RUNNER_TEMP/unit-10-apply.py"
+          git reset --hard "$CURRENT_MAIN"
+          git clean -fdx
+          test -z "$(git status --porcelain)"
+
+      - name: Set up repository toolchain
+        uses: ./.github/actions/setup-runner
+        with:
+          GOOGLESOURCE_COOKIE: ''
+
+      - name: Prepare exact standalone Prettier and bind setup residue
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = '.bazelrc'
+          corepack enable
+          pnpm --version
+          test "$(pnpm dlx prettier@3.8.1 --version)" = '3.8.1'
+
+      - name: Apply receiver foundation and Worker-global repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/unit-10-current-main-receipt"
+          git diff --binary "$FOUNDATION_BASE" "$FOUNDATION_HEAD" -- \
+            types/src/generator/structure.ts \
+            types/src/index.ts \
+            types/src/receiver.ts \
+            types/src/transforms/globals.ts \
+            types/src/transforms/overrides/index.ts \
+            types/test/generator/index.spec.ts \
+            types/test/generator/structure.spec.ts \
+            types/test/index.spec.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/transforms/overrides/index.spec.ts \
+            types/test/transforms/overrides/replacement-receiver-generics.spec.ts \
+            types/test/types/fetch-receiver.ts \
+            > "$receipt/foundation.patch"
+          test -s "$receipt/foundation.patch"
+          git apply --check --3way "$receipt/foundation.patch"
+          git apply --3way "$receipt/foundation.patch"
+          python3 "$RUNNER_TEMP/unit-10-apply.py"
+          pnpm dlx prettier@3.8.1 --write \
+            types/src/transforms/globals.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/types/inherited-global-receiver.ts
+          git diff --check
+          expected=$(printf '%s\n' \
+            types/src/generator/structure.ts \
+            types/src/index.ts \
+            types/src/receiver.ts \
+            types/src/transforms/globals.ts \
+            types/src/transforms/overrides/index.ts \
+            types/test/generator/index.spec.ts \
+            types/test/generator/structure.spec.ts \
+            types/test/index.spec.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/transforms/overrides/index.spec.ts \
+            types/test/transforms/overrides/replacement-receiver-generics.spec.ts \
+            types/test/types/fetch-receiver.ts \
+            types/test/types/inherited-global-receiver.ts | sort)
+          actual=$({ git diff --name-only; git ls-files --others --exclude-standard; } \
+            | grep -v '^\.bazelrc$' | sort -u)
+          test "$actual" = "$expected"
+          git diff --binary -- . ':(exclude).bazelrc' \
+            > "$receipt/human-source.patch"
+          git config user.name 'Fieldwork Agent'
+          git config user.email 'fieldwork-agent@users.noreply.github.com'
+          printf '%s\0' \
+            types/src/generator/structure.ts \
+            types/src/index.ts \
+            types/src/receiver.ts \
+            types/src/transforms/globals.ts \
+            types/src/transforms/overrides/index.ts \
+            types/test/generator/index.spec.ts \
+            types/test/generator/structure.spec.ts \
+            types/test/index.spec.ts \
+            types/test/transforms/globals.spec.ts \
+            types/test/transforms/overrides/index.spec.ts \
+            types/test/transforms/overrides/replacement-receiver-generics.spec.ts \
+            types/test/types/fetch-receiver.ts \
+            types/test/types/inherited-global-receiver.ts | xargs -0 git add --
+          git commit \
+            -m 'types: generate receiver-aware declarations' \
+            -m 'Generated with AI assistance.'
+          {
+            echo "human_source=$(git rev-parse HEAD)"
+            echo "setup_residue=.bazelrc"
+            echo "prettier=3.8.1"
+          } >> "$receipt/identity.txt"
+
+      - name: Run focused receiver and full types suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/unit-10-current-main-receipt"
+          bazelisk test \
+            //types:test/generator/index.spec \
+            //types:test/generator/structure.spec \
+            //types:test/index.spec \
+            //types:test/transforms/overrides/index.spec \
+            //types:test/transforms/overrides/replacement-receiver-generics.spec \
+            //types:test/transforms/globals.spec \
+            //types:test/types/fetch-receiver \
+            //types:test/types/inherited-global-receiver \
+            --test_output=errors 2>&1 | tee "$receipt/focused.log"
+          bazelisk test //types/... --test_output=errors \
+            2>&1 | tee "$receipt/all-types.log"
+          bazelisk test //types:types_lib@eslint --test_output=errors \
+            2>&1 | tee "$receipt/lint.log"
+
+      - name: Re-prove current runtime receiver behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/unit-10-current-main-receipt"
+          bazelisk build //src/workerd/server:workerd \
+            2>&1 | tee "$receipt/workerd-build.log"
+          mkdir -p "$RUNNER_TEMP/unit-10-current-runtime/test-tmp"
+          bazel-bin/src/workerd/server/workerd test \
+            --predictable \
+            "$RUNNER_TEMP/unit-10-current-runtime/unit-10-current-runtime-probe.wd-test" \
+            --compat-date=2999-12-31 \
+            -dTEST_TMPDIR="$RUNNER_TEMP/unit-10-current-runtime/test-tmp" \
+            2>&1 | tee "$receipt/runtime.log"
+
+      - name: Generate and commit exact declaration snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/unit-10-current-main-receipt"
+          bazelisk build --strip=always --config=ci --config=release_linux //types \
+            2>&1 | tee "$receipt/generate-types.log"
+          rm -rf types/generated-snapshot
+          mkdir -p types/generated-snapshot
+          cp -aL bazel-bin/types/definitions/. types/generated-snapshot/
+          ! grep -R '__JSG_GENERATED_RECEIVER__' types/generated-snapshot
+          git diff --check
+          git add types/generated-snapshot
+          test -n "$(git diff --cached --name-only)"
+          git diff --cached --binary > "$receipt/generated-snapshot.patch"
+          git commit \
+            -m 'types: update generated declaration snapshots' \
+            -m 'Generated with AI assistance.'
+          echo "snapshot_source=$(git rev-parse HEAD)" \
+            >> "$receipt/identity.txt"
+          diff -r types/generated-snapshot bazel-bin/types/definitions \
+            2>&1 | tee "$receipt/snapshot-diff.log"
+          test ! -s "$receipt/snapshot-diff.log"
+          git checkout HEAD -- .bazelrc
+          git diff --exit-code
+
+      - name: Record exact two-commit source and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/unit-10-current-main-receipt"
+          {
+            echo "current_main=$CURRENT_MAIN"
+            echo "foundation_base=$FOUNDATION_BASE"
+            echo "foundation_head=$FOUNDATION_HEAD"
+            echo "repair_carrier=$REPAIR_CARRIER"
+            echo "source_branch=$SOURCE_BRANCH"
+            echo "final_head=$(git rev-parse HEAD)"
+            echo "human_commit=$(git rev-parse HEAD^)"
+            echo "snapshot_commit=$(git rev-parse HEAD)"
+          } >> "$receipt/identity.txt"
+          test "$(git rev-list --count "$CURRENT_MAIN..HEAD")" = '2'
+          git push \
+            --force-with-lease="refs/heads/${SOURCE_BRANCH}:${CURRENT_MAIN}" \
+            origin "HEAD:refs/heads/${SOURCE_BRANCH}"
+
+      - name: Upload exact convergence receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-unit-10-current-main-convergence
+          path: ${{ runner.temp }}/unit-10-current-main-receipt/
+          if-no-files-found: warn
+          retention-days: 30
