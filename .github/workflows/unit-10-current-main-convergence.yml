@@ -20,7 +20,7 @@ env:
   CURRENT_MAIN: 31f10dc2b628b543f17bbe8b4578312f6eea43ad
   FOUNDATION_BASE: 813c31394b9909d8f557bba14324db275bc12720
   FOUNDATION_HEAD: a1628283d6160c1b8ebbfcc34b50cd5e73945977
-  REPAIR_CARRIER: b8935969023e926adfb0189379df1d1eadbd4db2
+  REPAIR_CARRIER: 82e8f428501765d3c7070c9d5ad45d95bd7fed6e
   SOURCE_BRANCH: candidate/10-receiver-aware-types-current-main
 
 jobs:
@@ -84,10 +84,11 @@ jobs:
         with:
           GOOGLESOURCE_COOKIE: ''
 
-      - name: Prepare exact standalone Prettier
+      - name: Prepare exact standalone Prettier and bind setup residue
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git diff --name-only)" = '.bazelrc'
           corepack enable
           pnpm --version
           test "$(pnpm dlx prettier@3.8.1 --version)" = '3.8.1'
@@ -134,9 +135,11 @@ jobs:
             types/test/transforms/overrides/replacement-receiver-generics.spec.ts \
             types/test/types/fetch-receiver.ts \
             types/test/types/inherited-global-receiver.ts | sort)
-          actual=$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)
+          actual=$({ git diff --name-only; git ls-files --others --exclude-standard; } \
+            | grep -v '^\.bazelrc$' | sort -u)
           test "$actual" = "$expected"
-          git diff --binary > "$receipt/human-source.patch"
+          git diff --binary -- . ':(exclude).bazelrc' \
+            > "$receipt/human-source.patch"
           git config user.name 'Fieldwork Agent'
           git config user.email 'fieldwork-agent@users.noreply.github.com'
           printf '%s\0' \
@@ -156,8 +159,11 @@ jobs:
           git commit \
             -m 'types: generate receiver-aware declarations' \
             -m 'Generated with AI assistance.'
-          echo "human_source=$(git rev-parse HEAD)" \
-            >> "$receipt/identity.txt"
+          {
+            echo "human_source=$(git rev-parse HEAD)"
+            echo "setup_residue=.bazelrc"
+            echo "prettier=3.8.1"
+          } >> "$receipt/identity.txt"
 
       - name: Run focused receiver and full types suites
         shell: bash
@@ -217,6 +223,7 @@ jobs:
           diff -r types/generated-snapshot bazel-bin/types/definitions \
             2>&1 | tee "$receipt/snapshot-diff.log"
           test ! -s "$receipt/snapshot-diff.log"
+          git checkout HEAD -- .bazelrc
           git diff --exit-code
 
       - name: Record exact two-commit source and publish
