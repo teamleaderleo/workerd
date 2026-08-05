@@ -73,6 +73,14 @@ jobs:
         with:
           GOOGLESOURCE_COOKIE: ''
 
+      - name: Install locked TypeScript dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm --version
+          pnpm install --frozen-lockfile
+
       - name: Apply guarded source and test repair
         shell: bash
         run: |
