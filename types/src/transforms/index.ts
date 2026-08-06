@@ -10,3 +10,4 @@ export * from "./importable";
 export * from "./internal-namespace";
 export * from "./iterators";
 export * from "./overrides";
+export * from "./worker-global-method-shadow";
