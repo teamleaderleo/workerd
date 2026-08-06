@@ -16,6 +16,7 @@ import {
 
 type NamedDeclaration = ts.InterfaceDeclaration | ts.ClassDeclaration;
 type MethodNode = ts.MethodSignature | ts.MethodDeclaration;
+type CallableNode = MethodNode | ts.FunctionDeclaration;
 
 function findDeclaration(
   sourceFile: ts.SourceFile,
@@ -43,7 +44,7 @@ function findMethods(
   );
 }
 
-function receiverType(sourceFile: ts.SourceFile, method: MethodNode): string {
+function receiverType(sourceFile: ts.SourceFile, method: CallableNode): string {
   const receiver = method.parameters[0];
   assert(receiver !== undefined);
   assert(receiver.type !== undefined);
@@ -113,7 +114,7 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
   );
   assert(globalAdd !== undefined);
   assert.strictEqual(
-    receiverType(sourceFile, globalAdd as unknown as MethodNode),
+    receiverType(sourceFile, globalAdd),
     'EventTarget<WorkerGlobalScopeEventMap> | typeof globalThis | null | void'
   );
 });
