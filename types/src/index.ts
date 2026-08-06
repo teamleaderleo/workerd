@@ -19,6 +19,7 @@ import {
   createImportableTransformer,
   createIteratorTransformer,
   createOverrideDefineTransformer,
+  createWorkerGlobalMethodShadowTransformer,
 } from './transforms';
 import { createClassToInterfaceTransformer } from './transforms/class-to-interface';
 import { createAddOnMessageDeclarationTransformer } from './transforms/onmessage-declaration';
@@ -82,6 +83,7 @@ export function printDefinitions(
     // Run global scope transformer after overrides so members added in
     // overrides are extracted
     createGlobalScopeTransformer(checker),
+    createWorkerGlobalMethodShadowTransformer(checker),
     createReceiverCleanupTransformer(),
     createClassToInterfaceTransformer(['Request', 'Response', 'WebSocket']),
     // TODO: enable this once we've figured out how not to expose internal modules
