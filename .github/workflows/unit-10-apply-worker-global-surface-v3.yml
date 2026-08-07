@@ -78,6 +78,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git diff --name-only)" = '.bazelrc'
+          test "$(git ls-files --others --exclude-standard)" = 'llvm.sh'
+          rm llvm.sh
+          test -z "$(git ls-files --others --exclude-standard)"
           corepack enable
           pnpm --version
           test "$(pnpm dlx prettier@3.8.1 --version)" = '3.8.1'
@@ -111,7 +114,7 @@ jobs:
             echo "carrier_head=${{ github.event.pull_request.head.sha || github.sha }}"
             echo "target_branch=$TARGET_BRANCH"
             echo "prettier=3.8.1"
-            echo "setup_residue=.bazelrc"
+            echo "setup_residue=.bazelrc; llvm.sh verified and removed"
           } > receipt/identity.txt
 
       - name: Run focused repair tests
